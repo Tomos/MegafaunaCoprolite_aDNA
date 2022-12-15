@@ -29,7 +29,7 @@ for(i in 1:no_sheets){
   csv_filtered <- csv_total %>% 
     filter(Level == 'species' | Level == 'genus') %>%
     arrange(desc(Significant), desc(Unique_Signature_Hits)) %>%
-    filter(Signature_Hits > unique_sig_thresh) %>%
+    filter(Signature_Hits > unique_sig_thresh) %>% ### Should this be Unique_Signature_Hits rather than Signature_Hits?
     filter(Scientific_Name != 'Homo' & Scientific_Name != 'Homo sapiens' & Scientific_Name != 'synthetic construct' & Scientific_Name != "uncultured bacterium")
   csv_filtered <- csv_filtered %>% arrange(desc(csv_filtered$Significant, csv_filtered$Unique_Signature_Hits))
   
