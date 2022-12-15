@@ -1,0 +1,70 @@
+samples = ['taxid_99802_HF_all_sig', 'taxid_99802_HF_all']
+
+rule all:
+    input:
+        expand(
+            "{sample}.bg",
+            sample=samples)
+
+
+rule db:
+    input: "GCA_000951995.1_S_erinaceieuropaei_genomic.fna"
+    output: touch('db.done')
+    threads: 4
+    shell:
+            """
+            module load bowtie2/2.3.4.1
+            bowtie2-build {input} SE --threads {threads}
+            """
+
+rule fasta2fastq:
+    """
+    Covert unaligned fasta queries to a fastq adding duplicates
+    back and supplying fake quality scores
+    """
+    input: '{sample}.fasta'
+    output: "{sample}.fastq"
+    threads: 1
+    message:
+        """
+        Converting unaligned fasta queries {input}
+        to fastq {output}.
+        Using {threads} thread(s).
+        """
+    run:
+        from Bio import SeqIO
+        with open(input[0], 'r') as handle:
+            with open(output[0], 'w') as out:
+                for record in SeqIO.parse(handle, 'fasta'):
+                    record.letter_annotations["phred_quality"] = (
+                        [40] * len(record))
+                    name = record.id
+                    for rep in range(int(record.id.split("_")[-1])):
+                        SeqIO.write(record, out, "fastq")
+
+
+rule bowtie:
+    input:
+        r1 = "{sample}.fastq",
+        db = "db.done"
+    output:
+        bam="{sample}.bam",
+        sorted = "{sample}_sorted.bam"
+    threads: 8
+    shell:
+        """
+        module load bowtie2/2.3.4.1
+        module load samtools/1.9
+        bowtie2 -x SE -U {input.r1} \
+        --threads {threads} | samtools view -bSu -o {output.bam}
+        samtools sort -o {output.sorted} {output.bam}
+        """
+
+rule coverage:
+    input: "{sample}_sorted.bam"
+    output: "{sample}.bg"
+    shell:
+        """
+        module load bedtools/2.26
+        bedtools genomecov -ibam {input} -bg > {output}
+        """
