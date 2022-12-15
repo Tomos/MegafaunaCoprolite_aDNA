@@ -2,3 +2,5 @@
 *.sh -crlf
 *.cfg -crlf
 *.R -crlf
+*.csv -crlf
+*.html -crlf
