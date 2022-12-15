@@ -1,0 +1,1889 @@
+---
+title: "aDNA_taxa"
+author: "Tomos Prys-Jones"
+date: "12/04/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(tidyverse)
+library(MASS)
+library(car)
+library(ellipse)
+library(ggplot2)
+library(MVN)
+library(stringr)
+library(glmnet)
+library(tictoc)
+library(caret)
+library(randomForest)
+library(stats)
+library(dummies)
+library(corrplot)
+library(viridisLite)
+library(viridis)
+library(RColorBrewer)
+library(dplyr)
+library(randomcoloR)
+library(taxize)
+library(stringr)
+library(rentrez)
+library(vegan)
+library(ecodist)
+library(Hmisc)
+library(gtools)
+library(plot3D)
+library(plotly)
+library(multichull)
+library(stringi)
+library(betapart)
+library(cluster)
+#library(pairwiseAdonis)
+library(randomcoloR)
+library(grid)
+library(gridExtra)
+library(ggplotify)
+library(RVAideMemoire)
+library(Polychrome)
+library(pals)
+#detach(package:plyr)
+```
+
+Global variables:
+```{r, message = FALSE}
+rm(list = ls())
+if(!is.null(dev.list())) dev.off()
+taxon_level_of_interest <- "class"
+base_dir <- "../"
+mammoth_directory <- "data/MTSv_output/mammoth/mam_na_cutadapt_36bp_3e_eff_2.0/results/" 
+elephant_directory <- "data/MTSv_output/elephant/ele_a_50bp_3e_eff/results/"
+sloth_directory <- "data/MTSv_output/sloth/aslo_na_cutadapt_36bp_3e_eff_2.0/results/"
+a_bison_directory <- "data/MTSv_output/a_bison/abis_na_cutadapt_36bp_3e_eff/results/"
+m_bison_directory <- "data/MTSv_output/m_bison/mbis_a_50bp_3e_eff/results/"
+extra_elephant_directory <- "data/MTSv_output/extra_elephant/extra_ele2_a_50bp_3e_eff/results/"
+bradypus_variegatus_directory <- "data/MTSv_output/bradypus_variegatus/bradypus_v_a_50bp_3e_eff/results/"
+desiccation_wong <- "Desiccation/Wong et al_2016/"
+desiccation_menke <- "Desiccation/Menke et al_2015/"
+```
+
+Downloads all taxa at different taxonomic levels (runs once):
+```{r}
+#set_entrez_key('') #Enter key
+#taxa <- c("phylum", "class", "order", "family", "genus", "species")
+#no_taxa <- length(taxa)
+#### Un-comment to download:
+#for(i in 1:no_taxa){
+  #focal_taxon <- taxa[i]
+  #print(paste0("Taxon level: ", focal_taxon, " ================="))
+  #print(focal_taxon)
+  #tic()
+  #taxon_df <- downstream("Bacteria",  db = "ncbi", downto = focal_taxon)
+  #taxon_df <- as.data.frame(taxon_df$Bacteria)
+  #saveRDS(taxon_df, file = paste0(base_dir, "data/Bacterial_taxa/", paste0("bacterial_",focal_taxon,".rds")))
+  #toc()
+#}
+
+```
+
+Create Prys-Jones data frame:
+```{r, message = FALSE}
+sample_table <- data.frame(host_species = character(), sample_id = character(), taxon_level = character(), cargo_taxon = character(), percentage = numeric(), unique_signature_hits = numeric())
+
+if(taxon_level_of_interest == "phylum"){
+  user_filter <- 3.299e-4 # for phylum
+}else if(taxon_level_of_interest == "class"){
+  user_filter <- 8.274e-4 # for class
+}else{
+  user_filter <- 3.299e-4
+}
+
+# The order of the nost_list and the corresponding host_dir_list should be the same:
+host_list <- c("Mammuthus \ncolumbi", 
+               "Loxodonta \nafricana", 
+               "Nothrotheriops \nshastensis", 
+               "Bison \nsp. (paleo)",
+               "Bison \nbison (modern)",
+               "Loxodonta \nafricana",
+               "Bradypus \nvariegatus")
+
+# Directories with the data from the different hosts:
+host_dir_list <- c(mammoth_directory,
+                   elephant_directory,
+                   sloth_directory,
+                   a_bison_directory,
+                   m_bison_directory,
+                   extra_elephant_directory,
+                   bradypus_variegatus_directory
+                   )
+
+n_hosts <- length(host_list)
+
+for(z in 1:n_hosts){
+  #z <- 1
+  host_sp_of_interest <- host_list[z]
+  #print(host_sp_of_interest)
+  host_path <- host_dir_list[z]
+  #print(host_path)
+  dir <- paste0(base_dir, host_path)
+  #print(dir)
+
+  analysis_csvs <- list.files(dir, pattern = "csv$")
+  analysis_csvs <- analysis_csvs[grep("analysis", analysis_csvs)]
+  no_csvs <- length(analysis_csvs)
+  example_csv <- read.csv(paste0(dir, as.character(analysis_csvs[1])))
+  taxa_levels <- unique(example_csv$Level)
+  no_levels <- length(taxa_levels)
+
+  for(i in 1:no_levels){ #replace with 'no_levels' eventually
+    #i <- 2
+    taxonomic_level <- taxa_levels[i]
+  
+    for(j in 1:no_csvs){ #replace with 'no_csvs' eventually
+      #j <- 1
+      csv_name <- analysis_csvs[j]
+      test_csv <- read.csv(paste0(dir,csv_name))
+      filtered_csv <- as.data.frame(test_csv %>% filter(test_csv$Level == taxonomic_level))
+      total_USH <- sum(filtered_csv$Unique_Signature_Hits)
+      filtered_csv$USH_prop <- filtered_csv$Unique_Signature_Hits / total_USH
+      filtered_csv <- filtered_csv %>% filter(USH_prop > user_filter)
+      #filtered_csv <- filtered_csv %>% filter(filtered_csv$Significant == "True")
+      filtered_csv <- filtered_csv %>% filter(Scientific_Name != 'Homo' & Scientific_Name != 'Homo sapiens' & Scientific_Name != 'synthetic construct' & Scientific_Name != "uncultured bacterium" & Scientific_Name != 'Chordata')
+      total_taxa_USH <- sum(filtered_csv$Unique_Signature_Hits)
+      prop_data <- filtered_csv %>% 
+        group_by(Scientific_Name) %>%
+        summarise(percentage = (Unique_Signature_Hits/total_taxa_USH)*100)
+      USH <- filtered_csv %>%
+        group_by(Scientific_Name) %>%
+        summarise(USH = Unique_Signature_Hits)
+      n_rows <- nrow(prop_data)
+      host_sp <- rep(host_sp_of_interest, n_rows)
+      host_sp <- as.data.frame(host_sp)
+      sample_ind_id <- sub("_analysis.csv", "", csv_name)
+      sample_id <- rep(sample_ind_id, n_rows)
+      sample_id <- as.data.frame(sample_id)
+      cargo_taxon <- rep(taxonomic_level, n_rows)
+      cargo_taxon <- as.data.frame(cargo_taxon)
+      taxon_level_data <- cbind(host_sp, sample_id, cargo_taxon, prop_data, USH[,2])
+      sample_table <- rbind(sample_table, taxon_level_data)
+    
+    }
+  }
+}
+
+# Remove paleo entries that do not have sufficient starting DNA:
+sample_table <- sample_table %>%
+  filter(sample_table$sample_id != "NHCS-GLCA877AncientBison-xx-xx-xxx-2019-024-FW_S2.a4b.Gs.lqt.minlen36" & sample_table$sample_id != "NHCS-GLCA900AncientBison-xx-xx-xxx-2019-024-FW_S1.a4b.Gs.lqt.minlen36")
+
+#sample_table <- sample_table %>%
+  #filter(sample_table$sample_id != "NHCS-GLCA877AncientBison-xx-xx-xxx-2019-024-FW_S2" & sample_table$sample_id != "NHCS-GLCA900AncientBison-xx-xx-xxx-2019-024-FW_S1")
+
+```
+
+
+Plotting Prys-Jones data:
+```{r}
+if(taxon_level_of_interest == "phylum"){
+  set.seed(4) # Set random seed (4, 6, 8, 9, 11 are good seeds for colours at phylum level)
+}else if(taxon_level_of_interest == "class"){
+  set.seed(9) # Set random seed (9, 11 are good seeds for colours at class level)
+}else{
+  set.seed(11)
+}
+
+plot_title <- paste0("Organisms in paleo-coprolites and modern feces at the taxonomic level of: ", str_to_title(taxon_level_of_interest))
+
+sample_table_subset <- sample_table %>% 
+  filter(sample_table$cargo_taxon == taxon_level_of_interest) %>%
+  group_by(sample_id)
+
+sample_table_subset <- as.data.frame(sample_table_subset)
+
+## Checking that all the percentages for a given sample and cargo_taxon level add up to 100;
+inc_samples <- unique(sample_table_subset$sample_id)
+inc_hosts <- unique(sample_table_subset$host_sp)
+inc_cargo <- unique(sample_table_subset$Scientific_Name)
+n_samples <- length(inc_samples)
+n_hosts <- length(inc_hosts)
+n_cargo <- length(inc_cargo)
+
+for(i in 1: n_samples){
+  #i <- 1
+  sample_of_interest <- inc_samples[i]
+  sub <- sample_table %>% filter(sample_id == sample_of_interest & cargo_taxon == taxon_level_of_interest)
+  print(sum(sub$percentage))
+}
+
+## A section that re-orders the samples in the sample_table_subset:
+order <- c("Mammuthus \ncolumbi", "Loxodonta \nafricana", "Bison \nsp. (paleo)", "Bison \nbison (modern)",   "Nothrotheriops \nshastensis", "Bradypus \nvariegatus")
+sample_table_subset <- sample_table_subset %>%
+  mutate(host_sp = factor(host_sp, levels = order)) %>%
+  arrange(host_sp)
+
+n_col_df <- sample_table_subset %>%
+  group_by(Scientific_Name) %>%
+  summarise(n = n())
+n_col_df <- as.data.frame(n_col_df)
+n_col <- length(n_col_df[,1])  
+#qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+#col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+
+{
+  
+  
+  
+
+col_vector2 <- distinctColorPalette(k = n_col, altCol = FALSE, runTsne = FALSE)
+#col_vector = createPalette(n_col,  c("#ff0000", "#127011", "#0000ff"))
+#col_vector2 <- as.character(col_vector)
+
+#palette2_all <- grDevices::colors() 
+#palette2_no_gray <- palette2_all[grep("gr(a|e)y",             # Remove gray colors
+#                                      grDevices::colors(),
+#                                      invert = T)]
+#col_vector2 <- sample(palette2_no_gray, n_col)   
+
+n_col_df$color_col <- col_vector2
+n_col_df$color_num <- c(1:n_col)
+
+for(i in 1:length(sample_table_subset[,1])){
+  for(j in 1:n_col){
+    if(sample_table_subset$Scientific_Name[i] == n_col_df$Scientific_Name[j]){
+      sample_table_subset$color_column[i] <- n_col_df$color_col[j]
+      sample_table_subset$color_num[i] <- n_col_df$color_num[j]
+    }else{
+    }
+  }
+}
+
+n_col_df$label_title <- paste0(n_col_df$Scientific_Name, " (", n_col_df$color_num,")")
+
+sample_table_subset$label_title <- paste0(sample_table_subset$Scientific_Name, " (", sample_table_subset$color_num, ")")
+sample_table_subset$color_num[sample_table_subset$percentage < 2] <- NA 
+
+
+plot <- ggplot(data = sample_table_subset, aes(x = sample_table_subset$sample_id, y = stat(sample_table_subset$percentage), fill = Scientific_Name)) +
+  theme_classic() +
+  geom_bar(stat = 'identity', position = "fill") +
+  geom_col(width = 1) +
+  xlab("Sample") +
+  scale_x_discrete(labels=c(1:n_samples, 1)) +
+  ylab("Percentage of USH") +
+  facet_grid(~host_sp, scales = 'free') +
+  theme(strip.background = element_rect(fill ="grey")) +
+  labs(fill = taxon_level_of_interest) +
+  guides(fill=guide_legend(title = paste0("Taxonomic level: ", str_to_title(taxon_level_of_interest)))) +
+  scale_fill_manual(values = n_col_df$color_col, label = n_col_df$label_title) +
+  theme(axis.text=element_text(size=12)) +
+  geom_text(aes(x = sample_table_subset$sample_id, label = sample_table_subset$color_num),
+            colour = 'black', position=position_stack(vjust=0.5), size = 3) +
+  theme(strip.text.x = element_text(size = 12)) 
+  
+leg <- cowplot::get_legend(plot)
+leg <- ggplotify::as.ggplot(leg)
+print(leg)
+ggsave(paste0(base_dir,"figures/", taxon_level_of_interest,"_taxonomy_legend.png"), width = 10, height = 5, units = 'in')
+
+plot <- plot + theme(legend.position = "none")
+print(plot)
+ggsave(paste0(base_dir,"figures/",taxon_level_of_interest,"_taxonomy.png"), width = 10, height = 5, units = 'in')
+
+
+}
+```
+
+Assessing the top groups of taxa in sample_table
+```{r}
+rentrez::set_entrez_key('d8180d3e04e11e320e130cd96cbfd40da708') # Enter key
+sample_table2 <- sample_table %>% dplyr::filter(sample_table$cargo_taxon == taxon_level_of_interest)
+taxa_list <- unique(sample_table2$Scientific_Name)
+ncbi_list <- taxize::classification(taxa_list, db = 'ncbi', return_id = TRUE, ask = FALSE, row = 2)
+min_percentage <- 1
+
+if(taxon_level_of_interest == 'class'){
+  sample_table2$phylum <- NA
+  sample_table2$superkingdom <- NA
+  for(i in names(ncbi_list)){
+    focal_ncbi <- as.data.frame((ncbi_list[[i]]))
+    sample_table2$phylum[sample_table2$Scientific_Name == i] <- focal_ncbi$name[focal_ncbi$rank == "phylum"]
+    sample_table2$superkingdom[sample_table2$Scientific_Name == i] <- focal_ncbi$name[focal_ncbi$rank == "superkingdom"]
+  }
+  class_phylum1 <- sample_table2 %>%
+    group_by(host_sp) %>% 
+    dplyr::summarize(sample_n = length(unique(sample_id)))
+  class_phylum2 <- sample_table2 %>%
+    group_by(host_sp, phylum) %>% 
+    dplyr::summarize(cumu_perc = sum(percentage))
+  class_phylum2$mean_perc <- class_phylum2$cumu_perc / class_phylum1$sample_n[match(class_phylum2$host_sp, class_phylum1$host_sp)]
+  class_phylum2
+  #write.csv(class_phylum2, file = paste0(base_dir, "Rscripts/class_phylum1.csv"))
+  
+  class_phylum3 <- sample_table2 %>%
+    group_by(host_sp, phylum, Scientific_Name) %>%
+    dplyr::summarize(cumu_perc = sum(percentage))
+  class_phylum3$mean_perc <- class_phylum3$cumu_perc / class_phylum1$sample_n[match(class_phylum3$host_sp, class_phylum1$host_sp)]
+  class_phylum3
+ #write.csv(class_phylum3, file = paste0(base_dir, "Rscripts/class_phylum2.csv"))
+ 
+ phy_breakdown <- data.frame(host = character(), phylum = character(), breakdown = numeric())
+ unique_hosts <- unique(class_phylum3$host_sp)
+ for(i in 1:length(unique_hosts)){
+   #i <- 1
+   focal_host <- unique_hosts[i]
+   print(focal_host)
+   class_phylum_subset <- class_phylum3[class_phylum3$host_sp == focal_host,]
+   print(sum(class_phylum_subset$mean_perc))
+   subset_phy <- unique(class_phylum_subset$phylum)
+   for(j in 1:length(subset_phy)){
+     #j <- 1
+     focal_sub_phy <- subset_phy[j]
+     class_phy_sub_sub <- class_phylum_subset[class_phylum_subset$phylum == focal_sub_phy,]
+     class_phy_sub_sub <- class_phy_sub_sub[class_phy_sub_sub$mean_perc >= min_percentage,]
+     if(sum(class_phy_sub_sub$mean_perc > 100)){
+       print("error")
+     }
+     class_phy_sub_sub <- class_phy_sub_sub[order(class_phy_sub_sub$mean_perc, decreasing = T),]
+     class_phy_sub_sub$x <- paste0(class_phy_sub_sub$Scientific_Name, ": ", class_phy_sub_sub$mean_perc)
+     class_list <- toString(class_phy_sub_sub$x, sep = "; ")
+     phy_breakdown <- rbind(phy_breakdown, cbind(focal_host, focal_sub_phy, class_list))
+   }
+ }
+ colnames(phy_breakdown) <- c("host_sp", "phylum", "class_breakdown (class: percentage)")
+ phy_breakdown$host_sp <- gsub("\n","",as.character(phy_breakdown$host_sp))
+ write.csv(phy_breakdown, file = paste0(base_dir, "figures/class_phylum3.csv"))
+ 
+  
+  class_sk1 <- sample_table2 %>%
+    group_by(host_sp) %>%
+    dplyr::summarize(sample_n = length(unique(sample_id)))
+  class_sk2 <- sample_table2 %>%
+    group_by(host_sp, superkingdom) %>%
+    dplyr::summarize(cumu_perc = sum(percentage))
+  class_sk2$mean_perc <- class_sk2$cumu_perc / class_sk1$sample_n[match(class_sk2$host_sp, class_sk1$host_sp)]
+  class_sk2
+  #write.csv(class_sk2, file = paste0(base_dir, "Rscripts/class_sk1.csv"))
+  
+  class_sk3 <- sample_table2 %>%
+    group_by(host_sp, superkingdom, Scientific_Name) %>%
+    dplyr::summarize(cumu_perc = sum(percentage))
+  class_sk3$mean_perc <- class_sk3$cumu_perc / class_sk1$sample_n[match(class_sk3$host_sp, class_sk1$host_sp)]
+  class_sk3
+  #write.csv(class_sk3, file = paste0(base_dir, "Rscripts/class_sk2.csv"))
+  
+ unique_hosts <- unique(class_sk1$host_sp)
+ sk_breakdown <- data.frame(host = character(), sk = character(), breakdown = numeric())
+ for(i in 1:length(unique_hosts)){
+   #i <- 1
+   focal_host <- unique_hosts[i]
+   print(focal_host)
+   class_sk_subset <- class_sk3[class_sk3$host_sp == focal_host,]
+   print(sum(class_sk_subset$mean_perc))
+   subset_sk <- unique(class_sk_subset$superkingdom)
+   for(j in 1:length(subset_sk)){
+     #j <- 1
+     focal_sub_sk <- subset_sk[j]
+     cla_sk_sub_sub <- class_sk_subset[class_sk_subset$superkingdom == focal_sub_sk,]
+     cla_sk_sub_sub <- cla_sk_sub_sub[order(cla_sk_sub_sub$mean_perc, decreasing = T),]
+     cla_sk_sub_sub <- cla_sk_sub_sub[cla_sk_sub_sub$mean_perc >= min_percentage,]
+     if(sum(cla_sk_sub_sub$mean_perc > 100)){
+       print("error")
+     }
+     cla_sk_sub_sub$x <- paste0(cla_sk_sub_sub$Scientific_Name, ": ", cla_sk_sub_sub$mean_perc)
+     class_list <- toString(cla_sk_sub_sub$x, sep = "; ")
+     sk_breakdown <- rbind(sk_breakdown, cbind(focal_host, focal_sub_sk, class_list))
+   }
+ }
+ colnames(sk_breakdown) <- c("host_sp", "superkingdom", "class_breakdown (class: percentage)")
+ sk_breakdown$host_sp <- gsub("\n","",as.character(sk_breakdown$host_sp))
+ write.csv(sk_breakdown, file = paste0(base_dir, "figures/class_sk3.csv"))
+ 
+  
+}else if(taxon_level_of_interest == 'phylum'){
+  sample_table2$superkingdom <- NA
+  for(i in names(ncbi_list)){
+    focal_ncbi <- as.data.frame((ncbi_list[[i]]))
+    sample_table2$superkingdom[sample_table2$Scientific_Name == i] <- focal_ncbi$name[focal_ncbi$rank == "superkingdom"]
+  }
+  
+  phylum_sk1 <- sample_table2 %>%
+    group_by(host_sp) %>%
+    dplyr::summarize(sample_n = length(unique(sample_id)))
+  phylum_sk2 <- sample_table2 %>%
+    group_by(host_sp, superkingdom) %>%
+    dplyr::summarize(cumu_perc = sum(percentage))
+  phylum_sk2$mean_perc <- phylum_sk2$cumu_perc / phylum_sk1$sample_n[match(phylum_sk2$host_sp, phylum_sk1$host_sp)]
+  phylum_sk2
+  #write.csv(phylum_sk2, file = paste0(base_dir, "Rscripts/phylum_sk1.csv"))
+  
+  phylum_sk3 <- sample_table2 %>%
+    group_by(host_sp, superkingdom, Scientific_Name) %>%
+    dplyr::summarize(cumu_perc = sum(percentage))
+  phylum_sk3$mean_perc <- phylum_sk3$cumu_perc / phylum_sk1$sample_n[match(phylum_sk3$host_sp, phylum_sk1$host_sp)]
+  phylum_sk3
+  #write.csv(phylum_sk3, file = paste0(base_dir, "Rscripts/phylum_sk2.csv"))
+  
+ unique_hosts <- unique(phylum_sk1$host_sp)
+ sk_breakdown <- data.frame(host = character(), sk = character(), breakdown = numeric())
+ for(i in 1:length(unique_hosts)){
+   #i <- 1
+   focal_host <- unique_hosts[i]
+   print(focal_host)
+   phylum_sk_subset <- phylum_sk3[phylum_sk3$host_sp == focal_host,]
+   print(sum(phylum_sk_subset$mean_perc))
+   subset_sk <- unique(phylum_sk_subset$superkingdom)
+   for(j in 1:length(subset_sk)){
+     #j <- 1
+     focal_sub_sk <- subset_sk[j]
+     phy_sk_sub_sub <- phylum_sk_subset[phylum_sk_subset$superkingdom == focal_sub_sk,]
+     phy_sk_sub_sub <- phy_sk_sub_sub[order(phy_sk_sub_sub$mean_perc, decreasing = T),]
+     phy_sk_sub_sub <- phy_sk_sub_sub[phy_sk_sub_sub$mean_perc >= min_percentage,]
+     if(sum(phy_sk_sub_sub$mean_perc > 100)){
+       print("error")
+     }
+     phy_sk_sub_sub$x <- paste0(phy_sk_sub_sub$Scientific_Name, ": ", phy_sk_sub_sub$mean_perc)
+     phy_list <- toString(phy_sk_sub_sub$x, sep = "; ")
+     sk_breakdown <- rbind(sk_breakdown, cbind(focal_host, focal_sub_sk, phy_list))
+   }
+ }
+ colnames(sk_breakdown) <- c("host_sp", "superkingdom", "phylum_breakdown (phylum: percentage)")
+ sk_breakdown$host_sp <- gsub("\n","",as.character(sk_breakdown$host_sp))
+ write.csv(sk_breakdown, file = paste0(base_dir, "figures/phylum_sk3.csv"))
+ 
+} else{
+  print("Breakdown of taxa abundances per host species not given for this taxonomic level, as the relative abundance of USHs (identified by MTSv) do not represent the relative abundance of that taxon in the sample - please see gargammel script")
+}
+
+ 
+
+```
+
+
+
+Data frame to calculate beta diversity metrics for Prys-Jones et al. samples:
+```{r, warning = FALSE}
+# Select the taxonomic level of interest:
+path_filename <- paste0(base_dir, "data/Bacterial_taxa/bacterial_", taxon_level_of_interest, ".rds")
+# Load all levels of the taxon of interest under the kindgom of bacteria (downloaded above):
+bacterial_taxon <- readRDS(path_filename)
+# Create dataframe of the results:
+bacterial_taxon_df <- as.data.frame(bacterial_taxon)
+### Remove spaces, hyphens and full stops from the taxonomic names:
+bacterial_taxon_df$childtaxa_name <- stri_replace_all_fixed(bacterial_taxon_df$childtaxa_name, pattern = c("-", ".", " "), replacement = c("", "", ""), vectorize_all = FALSE)
+# Creae list of all bacterial taxa at the level of interest:
+bacterial_taxa <- unique(bacterial_taxon_df$childtaxa_name)
+
+# Create empty matrix which will count the number of USHs for each taxon (at the level of interest)
+beta_div_count <- data.frame(matrix(0, nrow = length(unique(sample_table$sample_id)), ncol = length(unique(bacterial_taxon_df$childtaxa_name))))
+colnames(beta_div_count) <- c(unique(bacterial_taxon_df$childtaxa_name))
+rownames(beta_div_count) <- c(unique(sample_table$sample_id))
+
+# Take a subset of the sample_table corresponding to the taxonomic level of interest:
+subset_df <- sample_table %>% 
+  filter(cargo_taxon == taxon_level_of_interest)
+# List of all relevant taxa from the sample_table:
+subset_sample_id <- unique(subset_df$sample_id)
+
+for(i in 1:length(subset_sample_id)){
+  #i <- 1
+  # Iterate through the relevant rows from the sample_table:
+  sample_of_interest <- subset_sample_id[i]
+  # Take subset of the subset_df that only correspond to a single sample ID:
+  subset_ind <- subset_df %>%
+    filter(sample_id == sample_of_interest)
+  #print(paste0("------",i, ": ", sample_of_interest))
+  for(j in 1:length(subset_ind[,1])){
+    #j <- 1
+    subset_ind_name <- subset_ind$Scientific_Name[j]
+    #print(paste0("---- ", subset_ind_name))
+    # Adjust the taxa names so they are consistent with the beta_div_count df above:
+    subset_ind_name <- stri_replace_all_fixed(subset_ind_name, pattern = c("-", ".", " "), replacement = c("", "", ""), vectorize_all = FALSE)
+    #subset_ind_name <- gsub(c("-", ".", " "), "", subset_ind_name) 
+    #print(paste0("---", subset_ind_name))
+    
+    #print(length(beta_div_count[1,]))
+    beta_div_count[sample_of_interest, subset_ind_name] <- as.numeric(subset_ind$USH[j])
+  }
+}
+
+# Removes all non-bacterial phyla that have been added to the beta_div_count df, e.g. eucharyotes, etc.:
+beta_div_count <- beta_div_count[, (names(beta_div_count) %in% c(bacterial_taxon_df$childtaxa_name))]
+# Finds the proportion of USH assigned to each bacterial taxon across each sample row:
+beta_div_prop <- sweep(beta_div_count, 1, rowSums(beta_div_count), '/')
+
+
+### Metadata with the same rownames as the beta_div_prop/beta_div_count df above:
+metadata <- data.frame(matrix(NA, nrow = length(unique(sample_table$sample_id)), ncol = 6, dimnames = list(c(unique(sample_table$sample_id)), c("host_sp", "age", "pch", "day", "shaded", "order"))))
+host_list <- sample_table %>%
+  distinct(sample_id, host_sp, .keep_all = FALSE)
+
+for(i in 1:length(host_list[,1])){
+  #i <- 1
+  #print(host_list[i,2])
+  metadata[host_list[i,2], 1] <- host_list[i,1]
+  #print(metadata[host_list[i,2], 1])
+  if(metadata[host_list[i,2], 1] == "Mammuthus \ncolumbi" | metadata[host_list[i,2], 1] == "Nothrotheriops \nshastensis" | metadata[host_list[i,2], 1] == "Bison \nsp. (paleo)"){
+    metadata[host_list[i,2], 2] <- "past"
+    metadata[host_list[i,2], 3] <- 17
+    metadata$day[i] <- NA # Number of days in 15K years; arbritrary number
+    metadata$shaded[i] <- "S"
+  }else{
+    metadata[host_list[i,2], 2] <- "present"
+    metadata[host_list[i,2], 3] <- 16
+    metadata$day[i] <- 0
+    metadata$shaded[i] <- "U"
+  }
+  if(metadata[host_list[i,2], 1] == "Mammuthus \ncolumbi" | metadata[host_list[i,2], 1] == "Loxodonta \nafricana"){
+    metadata$order[i] <- "Probiscidea"
+  }else if(metadata[host_list[i,2], 1] == "Nothrotheriops \nshastensis" | metadata[host_list[i,2], 1] == "Bradypus \nvariegatus"){
+    metadata$order[i] <- "Pilosa"
+  }else{
+    metadata$order[i] <- "Artiodactyla"
+  }
+}
+
+
+
+# Adding color column to the metadata; each color signifies a different host species:
+n_col_df <- metadata %>%
+  group_by(host_sp) %>%
+  summarise(n = n())
+n_col_df <- as.data.frame(n_col_df)
+n_col <- length(n_col_df[,1])  
+
+col_vector2 <- distinctColorPalette(k = n_col, altCol = FALSE, runTsne = FALSE)
+n_col_df$color_col <- col_vector2
+
+for(i in 1:length(metadata[,1])){
+  for(j in 1:length(n_col_df[,1])){
+    if(metadata$host_sp[i] == n_col_df$host_sp[j]){
+      metadata$col_host[i] <- n_col_df$color_col[j]
+    }else{
+    }
+  }
+}
+
+# Adding color column to the metadata; each color signifies a different age:
+n_col_df <- metadata %>%
+  group_by(age) %>%
+  summarise(n = n())
+n_col_df <- as.data.frame(n_col_df)
+n_col <- length(n_col_df[,1])  
+
+col_vector2 <- distinctColorPalette(k = n_col, altCol = FALSE, runTsne = FALSE)
+n_col_df$color_col <- col_vector2
+
+for(i in 1:length(metadata[,1])){
+  for(j in 1:length(n_col_df[,1])){
+    if(metadata$age[i] == n_col_df$age[j]){
+      metadata$col_age[i] <- n_col_df$color_col[j]
+    }else{
+    }
+  }
+}
+
+# Removes all columns of zeros:
+#beta_div_prop <- beta_div_prop[, colSums(beta_div_prop != 0) > 0]
+
+braycurtis_prop <- vegdist(beta_div_prop, method = "bray")
+braycurtis_prop_sqrt <- vegdist(beta_div_prop^0.25, method = "bray") 
+
+```
+
+==== ORDINATION FOR PRYS-JONES ET AL. SAMPLES ====
+
+Non-metric multidimensional scaling (NMDS):
+```{r}
+# Nonmetric multidimensional scaling:
+NMDS_braycurtis_prop_k1 <- metaMDS(braycurtis_prop, k = 1, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_k1_sqrt <- metaMDS(braycurtis_prop_sqrt, k = 1, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_k2 <- metaMDS(braycurtis_prop, k = 2, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_k2_sqrt <- metaMDS(braycurtis_prop_sqrt, k = 2, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_k3 <- metaMDS(braycurtis_prop, k = 3, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_k3_sqrt <- metaMDS(braycurtis_prop_sqrt, k = 3, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_k4 <- metaMDS(braycurtis_prop, k = 4, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_k4_sqrt <- metaMDS(braycurtis_prop_sqrt, k = 4, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_k5 <- metaMDS(braycurtis_prop, k = 5, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_k5_sqrt <- metaMDS(braycurtis_prop_sqrt, k = 5, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_k6 <- metaMDS(braycurtis_prop, k = 6, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_k6_sqrt <- metaMDS(braycurtis_prop_sqrt, k = 6, try = 50, trymax = 50, autotransform = F)
+
+stress_points <- as.vector(c(NMDS_braycurtis_prop_k1$stress,
+NMDS_braycurtis_prop_k2$stress, NMDS_braycurtis_prop_k3$stress, NMDS_braycurtis_prop_k4$stress, NMDS_braycurtis_prop_k5$stress, NMDS_braycurtis_prop_k6$stress))
+
+stress_points_sqrt <- as.vector(c(NMDS_braycurtis_prop_k1_sqrt$stress,
+NMDS_braycurtis_prop_k2_sqrt$stress, NMDS_braycurtis_prop_k3_sqrt$stress, NMDS_braycurtis_prop_k4_sqrt$stress, NMDS_braycurtis_prop_k5_sqrt$stress, NMDS_braycurtis_prop_k6_sqrt$stress))
+
+# Establishing how many ordination dimensions to use (regular beta diversity matrix):
+{
+par(cex = 1.5, las = 1)
+plot_vec <- as.vector(sapply(1:length(stress_points), function(x) rep(x, 1), simplify = "vector"))
+plot(plot_vec, stress_points, ylab = "Stress", xlab = "Ordination dimensions")
+lines(1:(length(stress_points)), as.vector((by(stress_points, plot_vec, mean))))
+abline(a = 0.10, b = 0, col = "orange")
+abline(h = 0.20, col = "red")
+abline(h = 0.05, col = "green")
+}
+
+# Establishing how many ordination dimensions to use (with the square-rooted beta diversity matrix):
+{
+par(cex = 1.5, las = 1)
+plot_vec <- as.vector(sapply(1:length(stress_points_sqrt), function(x) rep(x, 1), simplify = "vector"))
+plot(plot_vec, stress_points_sqrt, ylab = "Stress", xlab = "Ordination dimensions")
+lines(1:(length(stress_points_sqrt)), as.vector((by(stress_points_sqrt, plot_vec, mean))))
+abline(a = 0.10, b = 0, col = "orange")
+abline(h = 0.20, col = "red")
+abline(h = 0.05, col = "green")
+}
+
+# Correlation between multidimensional distance and ordination distance:
+stressplot(NMDS_braycurtis_prop_k1)
+stressplot(NMDS_braycurtis_prop_k2)
+stressplot(NMDS_braycurtis_prop_k3)
+stressplot(NMDS_braycurtis_prop_k4)
+stressplot(NMDS_braycurtis_prop_k5)
+stressplot(NMDS_braycurtis_prop_k6)
+
+#ordiplot(NMDS_braycurtis_prop_k2)
+
+# Separating out the NMDS points
+NMDS_braycurtis_prop_k2_points <- NMDS_braycurtis_prop_k2$points
+NMDS_braycurtis_prop_k2_sqrt_points <- NMDS_braycurtis_prop_k2_sqrt$points
+
+
+# ggplot:
+############
+# Bray-curtis metrics not transformed
+data.scores <- as.data.frame(scores(NMDS_braycurtis_prop_k2_points))
+data.scores <- as.data.frame(cbind(data.scores, rownames(data.scores)))
+names(data.scores)[names(data.scores) == 'rownames(data.scores)'] <- 'sample'
+data.scores$host <- c(rep('Columbian mammoth',3),
+                      rep('African savannah elephant', 2),
+                      rep('Ground sloth', 4),
+                      rep('Bison (paleontological)', 3),
+                      rep('Bison (modern)', 5),
+                      rep('African savannah elephant', 4),
+                      rep('Brown-throated sloth', 2))
+
+data.scores$age <- c(rep('Paleontological',3),
+                      rep('Modern', 2),
+                      rep('Paleontological', 4),
+                      rep('Paleontological', 3),
+                      rep('Modern', 5),
+                      rep('Modern', 4),
+                      rep('Modern', 2))
+ch1 <- data.scores %>%
+  group_by(host) %>%
+  slice(chull(MDS1, MDS2))
+
+ch2 <- data.scores %>%
+  filter(age == "Modern") %>%
+  group_by(age) %>%
+  slice(chull(MDS1, MDS2))
+
+ch3 <- data.scores %>%
+  filter(age == "Paleontological") %>%
+  group_by(age) %>%
+  slice(chull(MDS1, MDS2))
+
+NMDS_k2_plot_host <- ggplot() + 
+  theme_classic() +
+  geom_point(data=data.scores,aes(x=MDS1, y=MDS2, colour=host), size=3) +
+  scale_color_manual(name = "Host species:",
+                     values = c('Columbian mammoth' = 'skyblue',
+                                'African savannah elephant' = 'dodgerblue4',
+                                'Ground sloth' = 'darkolivegreen2',
+                                'Bison (paleontological)' = 'tan',
+                                'Bison (modern)' = 'tan4',
+                                'Brown-throated sloth' = 'darkolivegreen')) +
+  geom_polygon(data = ch1, aes(x = MDS1, y = MDS2, group = host, col = c(host)), size = 1, alpha = 0) +
+  coord_equal() +
+  geom_polygon(data = ch2, aes(x = MDS1, y = MDS2, group = age), fill = c("skyblue"), size = 1, alpha = 0.2) +
+  coord_equal() +
+  geom_polygon(data = ch3, aes(x = MDS1, y = MDS2, group = age), fill = c("red"), size = 1, alpha = 0.1) +
+  coord_equal() +
+  annotate("text", x = (max(data.scores$MDS1) - (max(data.scores$MDS1)/6)), 
+             y = (max(data.scores$MDS2) + (max(data.scores$MDS2)/4)),
+             label = "Modern", 
+             size = 5) +
+  annotate("text", x = (min(data.scores$MDS1) + (max(data.scores$MDS1)/2)), 
+             y = (max(data.scores$MDS2) + (max(data.scores$MDS2)/4)),
+             label = "Paleontological", 
+             size = 5) +
+  ggtitle(paste0(str_to_title( taxon_level_of_interest), ":")) +
+  theme(plot.title = element_text(size = 20, face = "bold")) +
+  theme(axis.text=element_text(size=12))
+
+leg <- cowplot::get_legend(NMDS_k2_plot_host)
+leg <- ggplotify::as.ggplot(leg)
+print(leg)
+ggsave(paste0(base_dir,"figures/",taxon_level_of_interest,"_NMDS_host_age_legend.png"), width = 10, height = 5, units = 'in')
+
+NMDS_k2_plot_host <- NMDS_k2_plot_host + theme(legend.position = "none")
+print(NMDS_k2_plot_host)
+ggsave(paste0(base_dir,"figures/",taxon_level_of_interest,"_NMDS_host_age.png"), width = 10, height = 5, units = 'in')
+
+# Bray-curtis metrics to the power 0.25:
+data.scores <- as.data.frame(scores(NMDS_braycurtis_prop_k2_sqrt_points))
+data.scores <- as.data.frame(cbind(data.scores, rownames(data.scores)))
+names(data.scores)[names(data.scores) == 'rownames(data.scores)'] <- 'sample'
+data.scores$host <- c(rep('Columbian mammoth',3),
+                      rep('African savannah elephant', 2),
+                      rep('Ground sloth', 4),
+                      rep('Bison (paleontological)', 3),
+                      rep('Bison (modern)', 5),
+                      rep('African savannah elephant', 4),
+                      rep('Brown-throated sloth', 2))
+data.scores$age <- c(rep('Paleontological',3),
+                      rep('Modern', 2),
+                      rep('Paleontological', 4),
+                      rep('Paleontological', 3),
+                      rep('Modern', 5),
+                      rep('Modern', 4),
+                      rep('Modern', 2))
+ch1 <- data.scores %>%
+  group_by(host) %>%
+  slice(chull(MDS1, MDS2))
+
+ch2 <- data.scores %>%
+  filter(age == "Modern") %>%
+  group_by(age) %>%
+  slice(chull(MDS1, MDS2))
+
+ch3 <- data.scores %>%
+  filter(age == "Paleontological") %>%
+  group_by(age) %>%
+  slice(chull(MDS1, MDS2))
+
+
+NMDS_k2_plot_host <- ggplot() + 
+  theme_classic() +
+  geom_polygon(data = ch1, aes(x = MDS1, y = MDS2, group = host, col = c(host)), size = 1, alpha = 0) +
+  coord_equal() +
+  geom_polygon(data = ch2, aes(x = MDS1, y = MDS2, group = age), fill = c("skyblue"), size = 1, alpha = 0.2) +
+  coord_equal() +
+  geom_polygon(data = ch3, aes(x = MDS1, y = MDS2, group = age), fill = c("red"), size = 1, alpha = 0.1) +
+  coord_equal() +
+  geom_point(data=data.scores,aes(x=MDS1, y=MDS2, colour=host), size=3) +
+  scale_color_manual(name = "Individual host species:",
+                     values = c('Columbian mammoth' = 'skyblue',
+                                'African savannah elephant' = 'dodgerblue4',
+                                'Ground sloth' = 'darkolivegreen2',
+                                'Bison (paleontological)' = 'tan',
+                                'Bison (modern)' = 'tan4',
+                                'Brown-throated sloth' = 'darkolivegreen')) +
+  annotate("text", x = (max(data.scores$MDS1) - (max(data.scores$MDS1)/6)), 
+             y = (max(data.scores$MDS2) + (max(data.scores$MDS2)/4)),
+             label = "Modern", 
+             size = 5) +
+  annotate("text", x = (min(data.scores$MDS1) + (max(data.scores$MDS1)/2)), 
+             y = (max(data.scores$MDS2) + (max(data.scores$MDS2)/4)),
+             label = "Paleontological", 
+             size = 5) +
+  xlab("NMDS1") + ylab("NMDS2") +
+  ggtitle(paste0(str_to_title( taxon_level_of_interest), ":")) +
+  theme(plot.title = element_text(size = 20, face = "bold")) +
+  theme(axis.text=element_text(size=12))
+  
+leg <- cowplot::get_legend(NMDS_k2_plot_host)
+leg <- ggplotify::as.ggplot(leg)
+print(leg)
+#ggsave(paste0(base_dir,"figures/",taxon_level_of_interest,"_sqrt_NMDS_host_age_legend.png"), width = 10, height = 5, units = 'in')
+
+NMDS_k2_plot_host <- NMDS_k2_plot_host + theme(legend.position = "none")
+print(NMDS_k2_plot_host)
+#ggsave(paste0(base_dir,"figures/",taxon_level_of_interest,"_sqrt_NMDS_host_age.png"), width = 10, height = 5, units = 'in')
+
+```
+
+
+PERMANOVA:
+```{r}
+# Dispersion test based on host species (an assumption of using PERMANOVA):
+bd <- vegan::betadisper(braycurtis_prop, as.factor(metadata$host_sp))
+boxplot(bd)
+permutest(bd)
+
+# Dispersion test based on sample age (an assumption of using PERMANOVA):
+bd <- betadisper(braycurtis_prop, metadata$age)
+boxplot(bd)
+permutest(bd)
+
+# PERMANOVA by host species nested within order, as well as whether the age (modern vs paleontological):
+pmv <- adonis(formula = braycurtis_prop ~ metadata$age + metadata$order / metadata$host_sp, strata = metadata$order, data = metadata, permutations = 9999, method = 'bray')
+pmv
+pmv_df <- as.data.frame(pmv$aov.tab)
+write.csv(pmv_df, paste0(base_dir, "figures/PrysJonesSamples_permanova_", taxon_level_of_interest, ".csv"))
+
+# Plot of permutations:
+densityplot(permustats(pmv))
+# pairwise PERMANOVA:
+pairwise.perm.manova(braycurtis_prop, metadata$host_sp, p.method="holm")
+# Which bacterial taxa are responsible for the bray-curtis distances between samples based on host species:
+sim1 <- vegan::simper(beta_div_prop, group = metadata$age)
+sim1
+# Which bacterial taxa are responsible for the bray-curtis distances between samples based on age:
+sim2 <- vegan::simper(beta_div_prop, group = metadata$host_sp)
+sim2
+```
+
+==== WONG ET AL (2016) DESICCATION DATA ====
+
+Wong et al (2016):
+```{r}
+wong_dir <- paste0(base_dir, "data/", desiccation_wong)
+wong_files <- list.files(path = wong_dir, pattern = "txt$")
+n_file <- length(wong_files)
+
+wong_taxa <- data.frame(Farm = character(),
+                   ManureID = character(),
+                   Days = character(),
+                   Taxon = character(),
+                   Prop = numeric(),
+                   Taxon_level <- character())
+
+for(f in 1:n_file){
+  #f <- 1
+  test_file_name <- wong_files[f]
+  test_file_info <- str_split(test_file_name, "\\_", n = Inf, simplify = TRUE)
+  taxon_lev <- gsub("\\..*", "",test_file_info[3])
+  test_file <- read.csv(file = paste0(base_dir, "data/", desiccation_wong, test_file_name), sep = '\t', header = TRUE)
+  test_file <- as.data.frame(test_file)
+
+  
+  for(i in 2:ncol(test_file)){
+    #i <- 3
+    sample_id <- as.character(colnames(test_file[i]))
+    sample_info <- str_split(sample_id, "\\.", n = Inf, simplify = TRUE)
+    subset <- test_file %>%
+      dplyr::select(Taxon, sample_id)
+    farm <- rep(sample_info[1], length(subset[,1]))
+    manureid <- rep(sample_info[2], length(subset[,1]))
+    day <- rep(sample_info[3], length(subset[,1]))
+    tax_lev <- rep(taxon_lev, length(subset[,1]))
+    subset <- cbind(farm, manureid, day, subset, tax_lev)
+    colnames(subset) <- c("Farm", "ManureID", "Day", "Taxon", "Prop", "Taxonomic_level")
+    wong_taxa <- rbind(wong_taxa, subset)
+  }
+}
+
+wong_taxa$Taxonomic_level[wong_taxa$Taxonomic_level == 'L2'] <- 'phylum'
+wong_taxa$Taxonomic_level[wong_taxa$Taxonomic_level == 'L3'] <- 'class'
+wong_taxa$Taxonomic_level[wong_taxa$Taxonomic_level == 'L4'] <- 'order'
+wong_taxa$Taxonomic_level[wong_taxa$Taxonomic_level == 'L5'] <- 'family'
+wong_taxa$Taxonomic_level[wong_taxa$Taxonomic_level == 'L6'] <- 'genus'
+
+taxa_level_n <- wong_taxa %>%
+  group_by(Taxonomic_level) %>%
+  summarise(n = n())
+
+
+```
+
+
+
+Plotting Wong et al (2016) data:
+```{r}
+set.seed(9)
+wong_subset <- wong_taxa %>% 
+  filter(wong_taxa$Taxonomic_level == taxon_level_of_interest) 
+
+sample_check <- wong_subset %>%
+  group_by(ManureID, Day) %>%
+  summarise(total_prop = sum(wong_subset$Prop))
+sample_check$Day <- as.numeric(sample_check$Day)
+sample_check <- arrange(sample_check, ManureID, Day)
+
+
+n_col_df <- wong_subset %>%
+  group_by(Taxon) %>%
+  summarise(n = n())
+n_col_df <- as.data.frame(n_col_df)
+n_col <- length(n_col_df[,1])  
+
+col_vector2 <- distinctColorPalette(k = n_col, altCol = FALSE, runTsne = FALSE)
+n_col_df$color_col <- col_vector2
+
+for(i in 1:length(wong_subset[,1])){
+  for(j in 1:n_col){
+    if(wong_subset$Taxon[i] == n_col_df$Taxon[j]){
+      wong_subset$color_column[i] <- n_col_df$color_col[j]
+    }else{
+    }
+  }
+}
+
+wong_subset$Day <- as.numeric(wong_subset$Day)
+collection_days <- sort(unique(wong_subset$Day))
+no_collection_days <- length(collection_days)
+for(i in 1:no_collection_days){
+  test_time <- collection_days[i]
+  #print(test_time)
+  wong_subset$time_rank[wong_subset$Day == test_time] <- i
+}
+wong_subset$time_rank <- as.numeric(wong_subset$time_rank)
+
+### Temporary fix to the double value for the 15 day measurement in sample 16S:
+### Need to check with Melvin to see whether this is a reasonable assumption to make.
+wong_subset$Prop[wong_subset$ManureID == '16S' & wong_subset$Day == '15'] <- wong_subset$Prop/2
+
+
+plot_title <- paste0("Bacterial taxa (16S rRNA) in cattle feces through time; taxonomic level - ", taxon_level_of_interest)
+taxon_plot <- ggplot(data = wong_subset, aes(x = time_rank, y = stat(wong_subset$Prop), fill = Taxon)) +
+  geom_bar(stat = 'identity') +
+  geom_col(width = 1) +
+  #ggtitle(plot_title) +
+  xlab("Day") +
+  #scale_x_continuous(labels=c(rep(c("0", "2", "4", "6", "8", "15", "22", "29", "43", "57"), 12))) +
+  #scale_x_discrete() +
+  ylab("Percentage of 16S per bacterial phylum") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(axis.text.x = element_text(size = 10, angle = 45, hjust = 1)) +
+  facet_grid(~ManureID, scales = 'free') +
+  scale_fill_manual(values = col_vector2, name = paste0("Taxonomic level: ", str_to_title(taxon_level_of_interest))) +
+  scale_x_discrete(limits=c("0", "2", "4", "6", "8", "15", "22", "29", "43", "57")) +
+  theme(axis.text.x = element_text(size = 8, angle = 90, hjust = 0, vjust = 0.5))
+
+plot(taxon_plot)
+ggsave(paste0(base_dir,"figures/wong_results_", taxon_level_of_interest, ".png"), width = 16, height = 8, units = 'in')
+
+#Test showing there is a duplication of the values in sample 16S, day 15
+no <- wong_subset %>%
+  group_by(ManureID, Day) %>%
+  summarise(total = sum(Prop))
+
+
+
+```
+
+Combining Doughty et al (2021) data with the Wong et al (2016):
+```{r, message = FALSE, warning = FALSE}
+
+### Add the Wong et al data:
+
+wong_subset <- wong_taxa %>% 
+  filter(wong_taxa$Taxonomic_level == taxon_level_of_interest) 
+wong_subset$Taxon_1 <- gsub(";.*", "", wong_subset$Taxon)
+wong_subset$Taxon_2 <- gsub(".*\\;", "", wong_subset$Taxon)
+wong_subset <- wong_subset %>%
+  filter(wong_subset$Taxon_1 == "Bacteria")
+wong_subset$Taxon_2 <- stri_replace_all_fixed(wong_subset$Taxon_2, pattern = c("-", ".", " "), replacement = c("", "", ""), vectorize_all = FALSE)
+#wong_subset$Taxon_2 <- gsub(c("-", ".", " "), "", wong_subset$Taxon_2)
+wong_subset$ID_time <- paste0(wong_subset$ManureID, "_", wong_subset$Day)
+wong_subset <- as.data.frame(wong_subset)
+
+beta_div_prop_wong <- data.frame(matrix(0, nrow = length(unique(wong_subset$ID_time)), ncol = length(bacterial_taxon_df$childtaxa_name))) 
+colnames(beta_div_prop_wong) <- c(unique(bacterial_taxon_df$childtaxa_name))
+rownames(beta_div_prop_wong) <- c(unique(wong_subset$ID_time))
+test_matrix <- matrix()
+beta_div_prop_wong <- as.data.frame(beta_div_prop_wong)
+
+# FOR LOOP TO ADD THE WONG DATA TO THE BETA_DIV_PROP DF:
+wong_sample_id <- unique(wong_subset$ID_time)
+
+for(i in 1:length(wong_sample_id)){
+  #i <- 1
+  # Iterate through the relevant rows from the sample_table:
+  sample_of_interest <- wong_sample_id[i]
+  #print(sample_of_interest)
+  subset_ind <- wong_subset %>%
+    filter(wong_subset$ID_time == sample_of_interest)
+  for(j in 1:length(subset_ind[,1])){
+    #j <- 2
+    subset_ind_name <- subset_ind$Taxon_2[j]
+    #print(paste0("---- ", subset_ind_name))
+    # Adjust the taxa names so they are consistent with the beta_div_count df above:
+    subset_ind_name <- stri_replace_all_fixed(subset_ind_name, pattern = c("-", ".", " "), replacement = c("", "", ""), vectorize_all = FALSE)
+    #subset_ind_name <- gsub(c("-", ".", " "), "", subset_ind_name) 
+    #print(paste0("---- ", subset_ind_name))
+    beta_div_prop_wong[sample_of_interest, subset_ind_name] <- as.numeric(subset_ind$Prop[j]) 
+  }
+}
+
+# Removes all non-bacterial phyla that have been added to the beta_div_count df, e.g. eucharyotes, etc.:
+beta_div_prop_wong <- beta_div_prop_wong[, (names(beta_div_prop_wong) %in% c(bacterial_taxon_df$childtaxa_name))]
+# Finds the proportion of USH assigned to each bacterial taxon across each sample row:
+beta_div_prop_wong<- sweep(beta_div_prop_wong, 1, rowSums(beta_div_prop_wong), '/')
+
+
+#Wong meta data:
+metadata_wong <- data.frame(matrix(NA, nrow = length(unique(wong_subset$ID_time)), ncol = 5, dimnames = list(c(unique(wong_subset$ID_time)), c("host_sp", "age", "pch", "day", "shaded")))) 
+metadata_wong$host_sp <- "Bos taurus"
+metadata_wong$age <- "variable - dessication study"
+metadata_wong$pch <- 15
+host_list <- wong_subset %>%
+  distinct(Day, ID_time, .keep_all = FALSE)
+host_list <- as.data.frame(host_list)
+# select out the shade vs sunlight characters from the ID_time field:
+
+for(i in 1:length(host_list[,1])){
+  #i <- 1
+  #print(host_list[i,2])
+  metadata_wong[host_list[i,2], 4] <- host_list[i,1]
+  #print(metadata[host_list[i,2], 1])
+  shaded <- gsub("[^[:alpha:]]", "", host_list[i,2])
+  metadata_wong[host_list[i,2], 5] <- shaded
+}
+
+metadata_wong$order <- "Artiodactyla"
+
+# Adding color column to the metadata; each color signifies a different host species:
+n_col_df <- metadata_wong %>%
+  group_by(host_sp) %>%
+  summarise(n = n())
+n_col_df <- as.data.frame(n_col_df)
+n_col <- length(n_col_df[,1])  
+
+col_vector2 <- distinctColorPalette(k = n_col, altCol = FALSE, runTsne = FALSE)
+n_col_df$color_col <- col_vector2
+
+for(i in 1:length(metadata_wong[,1])){
+  for(j in 1:length(n_col_df[,1])){
+    if(metadata_wong$host_sp[i] == n_col_df$host_sp[j]){
+      metadata_wong$col_host[i] <- n_col_df$color_col[j]
+    }else{
+    }
+  }
+}
+
+# Adding color column to the metadata; each color signifies a different age:
+n_col_df <- metadata_wong %>%
+  group_by(age) %>%
+  summarise(n = n())
+n_col_df <- as.data.frame(n_col_df)
+n_col <- length(n_col_df[,1])  
+
+col_vector2 <- distinctColorPalette(k = n_col, altCol = FALSE, runTsne = FALSE)
+n_col_df$color_col <- col_vector2
+
+for(i in 1:length(metadata_wong[,1])){
+  for(j in 1:length(n_col_df[,1])){
+    if(metadata_wong$age[i] == n_col_df$age[j]){
+      metadata_wong$col_age[i] <- n_col_df$color_col[j]
+    }else{
+    }
+  }
+}
+
+#plot(PCoA_braycurtis_prop_wong[,1], PCoA_braycurtis_prop_wong[,2], pch = metadata_wong$pch, col=metadata_wong$day)
+
+beta_div_prop_total <- rbind(beta_div_prop, beta_div_prop_wong)
+metadata_total <- rbind(metadata, metadata_wong)
+beta_div_prop_total <- beta_div_prop_total[, colSums(beta_div_prop_total != 0) > 0]
+
+braycurtis_prop_total <- vegdist(beta_div_prop_total, method = "bray")
+braycurtis_prop_total_sqrt <- vegdist(beta_div_prop_total^0.25, method = "bray")
+
+```
+
+
+==== ORDINATION OF DOUGHTY ET AL (2021) DATA WITH WONG ET AL (2016) DESICCATION DATA ====
+
+Non-metric multidimensional scaling (NMDS) on Doughty et al and Wong et al data:
+```{r}
+# Nonmetric multidimensional scaling:
+NMDS_braycurtis_prop_total_k1 <- metaMDS(braycurtis_prop_total, k = 1, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_total <- metaMDS(braycurtis_prop_total, k = 2, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_total_k3 <- metaMDS(braycurtis_prop_total, k = 3, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_total_k4 <- metaMDS(braycurtis_prop_total, k = 4, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_total_k5 <- metaMDS(braycurtis_prop_total, k = 5, try = 50, trymax = 50, autotransform = F)
+NMDS_braycurtis_prop_total_k6 <- metaMDS(braycurtis_prop_total, k = 6, try = 50, trymax = 50, autotransform = F)
+
+stress_points <- as.vector(c(NMDS_braycurtis_prop_total_k1$stress,
+NMDS_braycurtis_prop_total$stress, NMDS_braycurtis_prop_total_k3$stress, NMDS_braycurtis_prop_total_k4$stress, NMDS_braycurtis_prop_total_k5$stress, NMDS_braycurtis_prop_total_k6$stress))
+
+# Establishing how many ordination dimensions to use:
+{
+par(cex = 1.5, las = 1)
+plot_vec <- as.vector(sapply(1:length(stress_points), function(x) rep(x, 1), simplify = "vector"))
+plot(plot_vec, stress_points, ylab = "Stress", xlab = "Ordination dimensions")
+lines(1:(length(stress_points)), as.vector((by(stress_points, plot_vec, mean))))
+abline(a = 0.10, b = 0, col = "orange")
+abline(h = 0.20, col = "red")
+abline(h = 0.05, col = "green")
+}
+
+# Correlation between multidimensional distance and ordination distance:
+stressplot(NMDS_braycurtis_prop_total_k1)
+stressplot(NMDS_braycurtis_prop_total)
+stressplot(NMDS_braycurtis_prop_total_k3)
+stressplot(NMDS_braycurtis_prop_total_k4)
+stressplot(NMDS_braycurtis_prop_total_k5)
+stressplot(NMDS_braycurtis_prop_total_k6)
+
+```
+
+
+NMDS on just the bovid data from Doughty et al and Wong et al:
+```{r}
+metadata_bovid <- metadata_total %>%
+  filter(host_sp %in% c("Bos taurus", "Bison \nsp. (paleo)", "Bison \nbison (modern)"))
+to_keep <- metadata_total$host_sp %in%
+  c("Bos taurus", "Bison \nsp. (paleo)", "Bison \nbison (modern)")
+beta_div_prop_bovid <- beta_div_prop_total[to_keep,]
+
+# Remove paleo entries that do not have sufficient starting DNA:
+beta_div_prop_bovid <- beta_div_prop_bovid %>%
+  filter(rownames(beta_div_prop_bovid) != "NHCS-GLCA877AncientBison-xx-xx-xxx-2019-024-FW_S2" & rownames(beta_div_prop_bovid) != "NHCS-GLCA900AncientBison-xx-xx-xxx-2019-024-FW_S1")
+metadata_bovid <- metadata_bovid %>%
+  filter(rownames(metadata_bovid) != "NHCS-GLCA877AncientBison-xx-xx-xxx-2019-024-FW_S2" & rownames(metadata_bovid) != "NHCS-GLCA900AncientBison-xx-xx-xxx-2019-024-FW_S1")
+
+beta_div_prop_bovid <- beta_div_prop_bovid[, colSums(beta_div_prop_bovid != 0) > 0]
+braycurtis_prop_bovid <- vegdist(beta_div_prop_bovid, method = "bray")
+braycurtis_prop_sqrt_bovid <- vegdist(beta_div_prop_bovid^0.25, method = "bray")
+NMDS_braycurtis_prop_bovid <- metaMDS(braycurtis_prop_bovid, k = 2, try = 50, trymax = 50, autotransform = F)$points
+NMDS_braycurtis_prop_sqrt_bovid <- metaMDS(braycurtis_prop_sqrt_bovid, k = 2, try = 50, trymax = 50, autotransform = F)$points
+
+
+NMDS_braycurtis_prop_bovid <- as.data.frame(NMDS_braycurtis_prop_bovid)
+NMDS_braycurtis_prop_sqrt_bovid <- as.data.frame(NMDS_braycurtis_prop_sqrt_bovid)
+metadata_bovid$col_day <- NA
+
+# Color of bison col_age column is black
+metadata_bovid$col_day[metadata_bovid$host_sp == "Bison \nsp. (paleo)"] <- "#000000"
+metadata_bovid$col_day[metadata_bovid$host_sp == "Bison \nbison (modern)"] <- "#000000"
+metadata_bovid$day[metadata_bovid$host_sp == "Bison \nsp. (paleo)"] <- "Bison sample (modern: 0 days;\npaleontological: > 15,000 yrs)"
+metadata_bovid$day[metadata_bovid$host_sp == "Bison \nbison (modern)"] <- "Bison sample (modern: 0 days;\npaleontological: > 15,000 yrs)"
+
+# Colors of Bos Taurus col_age column are variable, depending on the day
+n_col_df <- metadata_bovid %>%
+  filter(metadata_bovid$host_sp == "Bos taurus") %>%
+  group_by(day) %>%
+  summarise(n = n())
+n_col_df <- as.data.frame(n_col_df)
+n_col_df <- n_col_df[order(as.numeric(n_col_df$day)),]
+n_col <- length(n_col_df[,1])  
+
+#col_vector2 <- distinctColorPalette(k = n_col, altCol = FALSE, runTsne = FALSE)
+col_gradient <- fun_color_range <- colorRampPalette(c("royalblue3", "coral3"))
+col_vector2 <- col_gradient(n_col)
+n_col_df$color_col <- col_vector2
+
+for(i in 1:length(metadata_bovid[,1])){
+  for(j in 1:length(n_col_df[,1])){
+    if(metadata_bovid$day[i] == n_col_df$day[j] & metadata_bovid$host_sp[i] == "Bos taurus"){
+      metadata_bovid$col_day[i] <- n_col_df$color_col[j]
+    }else{
+    }
+  }
+}
+
+#Add graphing index:
+graph_index <- metadata_bovid %>%
+  group_by(host_sp, day) %>%
+  summarise(n = n())
+col_vector2 <- distinctColorPalette(k = nrow(graph_index), altCol = FALSE, runTsne = FALSE)
+graph_index$index_col <- col_vector2
+
+for(i in 1:length(metadata_bovid[,1])){
+  for(j in 1:nrow(graph_index[,1])){
+    if(metadata_bovid$host_sp[i] == graph_index$host_sp[j] & metadata_bovid$day[i] == graph_index$day[j]){
+      metadata_bovid$graph_index[i] <- j
+      metadata_bovid$index_col[i] <- graph_index$index_col[j]
+    }else{}
+  }
+}
+
+bovid_NMDS_metadata <- cbind(NMDS_braycurtis_prop_bovid, metadata_bovid)
+bovid_NMDS_metadata$col_day <- as.character(bovid_NMDS_metadata$col_day)
+
+bovid_sqrt_NMDS_metadata <- cbind(NMDS_braycurtis_prop_sqrt_bovid, metadata_bovid)
+bovid_sqrt_NMDS_metadata$col_day <- as.character(bovid_sqrt_NMDS_metadata$col_day)
+
+# Split the bovid df into one for bison and one for Bos taurus in order to create two separate sets of convex hulls
+bovid_NMDS_metadata <- arrange(bovid_NMDS_metadata, host_sp, as.numeric(day))
+bison_NMDS_metadata <- bovid_NMDS_metadata %>%  filter(bovid_NMDS_metadata$host_sp != "Bos taurus")
+bostaurus_NMDS_metadata <- bovid_NMDS_metadata %>% filter(bovid_NMDS_metadata$host_sp == "Bos taurus")
+
+# Bos taurus convex hull
+ch <- bostaurus_NMDS_metadata %>%
+  group_by(graph_index) %>%
+  slice(chull(MDS1, MDS2))
+
+# Bison convex hull
+ch2 <- bison_NMDS_metadata %>%
+  group_by(graph_index) %>%
+  slice(chull(MDS1,MDS2))
+
+# Plotting the bison and cattle NMDS data
+Bovid_NMDS_plot <- ggplot() +
+  theme_classic() +
+  geom_point(data = bostaurus_NMDS_metadata, aes(x = bostaurus_NMDS_metadata[,1], y = bostaurus_NMDS_metadata[,2], shape = factor(host_sp), col = col_day), size = 3) +
+  geom_polygon(data = ch, aes(x = MDS1, y = MDS2, group = graph_index, col = c(col_day)), size = 2, alpha = 0) +
+  geom_point(data = bison_NMDS_metadata, aes(x = bison_NMDS_metadata[,1], y = bison_NMDS_metadata[,2], shape = factor(host_sp), col = col_day), size = 4) +
+  geom_polygon(data = ch2, aes(x = MDS1, y = MDS2, group = graph_index, col = c(col_day)), size = 2, alpha = 0.4) +
+  xlab("NMDS1") +
+  ylab("NMDS2") +
+  labs(shape = "Host species:",
+       color = "Age of samples (days,\nunless specified):") +
+  scale_color_manual(values = c(unique(bovid_NMDS_metadata$col_day)), labels = c(unique(bovid_NMDS_metadata$day)), breaks= unique(bovid_NMDS_metadata$col_day)) +
+  ggtitle(paste0(str_to_title( taxon_level_of_interest), ":")) +
+  theme(plot.title = element_text(size = 20, face = "bold"))
+
+leg <- cowplot::get_legend(Bovid_NMDS_plot)
+leg <- ggplotify::as.ggplot(leg)
+print(leg)
+ggsave(paste0(base_dir,"figures/", taxon_level_of_interest, "_bovine_NMDS_legend.png"))
+
+Bovid_NMDS_plot <- Bovid_NMDS_plot + theme(legend.position = "none",
+                                           axis.text=element_text(size=12))
+print(Bovid_NMDS_plot)
+ggsave(paste0(base_dir,"figures/", taxon_level_of_interest, "_bovine_NMDS.png"), width = 8, height = 8, units = 'in')
+
+
+```
+Pairwise PERMANOVA
+```{r}
+metadata_bovid2 <- metadata_bovid
+metadata_bovid2$day[metadata_bovid2$age == "past"] <- "Paleontological bison: >15,000 yrs"
+metadata_bovid2$day[metadata_bovid2$age == "present"] <- "Modern bison: 0 days"
+
+# PERMANOVA by host species nested within order, as well as whether the age (modern vs paleontological):
+pmv <- adonis(formula = beta_div_prop_bovid ~ metadata_bovid2$host_sp + metadata_bovid2$day, data = metadata_bovid2, permutations = 9999, method = 'bray')
+pmv
+pmv_df <- pmv$aov.tab
+write.csv(pmv_df, paste0(base_dir, "/figures/PrysJonesSamples_cattle_permanova_", taxon_level_of_interest, ".csv"))
+
+pairwise_df <- pairwise.adonis(beta_div_prop_bovid, metadata_bovid2$day, sim.method = 'bray', p.adjust.m = 'BY', perm = 9999)
+pairwise_df <- as.data.frame(pairwise_df)
+pairwise_df <- pairwise_df[str_detect(pairwise_df$pairs, "Paleontological bison") == T 
+                           | str_detect(pairwise_df$pairs, "Modern bison") == T
+                           ,]
+pairwise_df <- pairwise_df[str_detect(pairwise_df$pairs, "Paleontological bison: >15,000 yrs vs Modern bison: 0 days") == F,]
+#pairwise_df
+comps <- data.frame(do.call('rbind', strsplit(as.character(pairwise_df$pairs),' vs ',fixed=TRUE)))
+colnames(comps) <- c("bison_sample", "cattle_faeces_age")
+pairwise_df <- as.data.frame(cbind(comps, pairwise_df))
+pairwise_df <- pairwise_df %>%
+  arrange(desc(bison_sample), as.numeric(cattle_faeces_age))
+pairwise_df
+write.csv(pairwise_df, paste0(base_dir,"figures/cattle_bison_pairwisePERMANOVA_", taxon_level_of_interest,".csv"), row.names = T)
+```
+
+
+
+==== MENKE ET AL (2015) DESICCATION DATA ====
+
+Menke et al (2015):
+```{r, include=FALSE}
+
+set_entrez_key('d8180d3e04e11e320e130cd96cbfd40da708')
+menke_springbok <- read.csv(paste0(base_dir, "data/", desiccation_menke, "springbok.txt"), sep = '\t', header = TRUE)
+menke_giraffe <- read.csv(paste0(base_dir, "data/", desiccation_menke, "giraffe.txt"), sep = '\t', header = TRUE)
+
+menke_springbok <- as.data.frame(menke_springbok)
+menke_giraffe <- as.data.frame(menke_giraffe)
+
+menke_all <- rbind(menke_springbok, menke_giraffe)
+menke_all <- as.data.frame(menke_all)
+menke_all <- menke_all %>% 
+  dplyr::rename(family = species)
+
+menke_all$phylum <- NA
+menke_all$class <- NA
+menke_all$order <- NA
+
+## Checking that all the percentages for a given sample and cargo_taxon level add up to 100;
+
+inc_hosts <- unique(menke_all$ind)
+inc_days <- unique(menke_all$time)
+n_hosts <- length(inc_hosts)
+n_days <- length(inc_days)
+n_entries <- length(menke_all[,1])
+
+#for(i in 1:n_hosts){
+ ##i <- 1
+  #for(j in 1:n_days){
+    ##j <- 1
+    #host_of_interest <- inc_hosts[i]
+    #day_of_interest <- inc_days[j]
+    #print(host_of_interest)
+    #print(day_of_interest)
+    #sub <- menke_all %>% filter(ind == host_of_interest & time == day_of_interest)
+    #print(sum(sub$percent_within_assigned_family))
+  #}
+#}
+
+menke_families <- unique(menke_all$family)
+n_families <- length(menke_families)
+
+#### I AM INFERRING THE PROPORTION OF TAXONOMIC LEVELS HIGHTER THAN FAMILY, USING TAXIZE
+#### THIS BLOCK OF SCRIPT MAY NEED TO BE UPDATED IF MENKE SENDS THROUGH UPDATED CSVS
+
+for(i in 1:n_families){
+  #i <- 1
+  family_of_interest <- menke_families[i]
+  
+  print(paste0("The family of interest is: ", family_of_interest, " and is number: ", i, " of ", n_families))
+  ncbi_levels <- taxize::tax_name(query = family_of_interest, get = c("phylum", "class", "order"), db = 'ncbi')
+  menke_all <- menke_all %>% 
+    mutate(phylum = ifelse(family == family_of_interest, ncbi_levels$phylum, phylum))
+  menke_all <- menke_all %>% 
+    mutate(class = ifelse(family == family_of_interest, ncbi_levels$class, class))
+  menke_all <- menke_all %>% 
+    mutate(order = ifelse(family == family_of_interest, ncbi_levels$order, order))
+  
+  menke_all <- menke_all %>% 
+    mutate(phylum = ifelse(family == c("Mogibacteriaceae", "S24-7"), c("Firmicutes", "Bacteroidetes"), phylum))
+  menke_all <- menke_all %>% 
+    mutate(class = ifelse(family == c("Mogibacteriaceae", "S24-7"), c("Clostridia", "Bacteroidia"), class))
+  menke_all <- menke_all %>% 
+    mutate(order = ifelse(family == c("Mogibacteriaceae", "S24-7"), c("Clostridiales", "Bacteroidales"), order))
+}
+
+## Adding column of each host-day combination
+for(i in 1:n_entries){
+  menke_all$host_day[i] <- paste0(menke_all$ind[i], "_", menke_all$time[i])
+}
+
+
+```
+
+
+
+Plotting Menke et al (2015) data:
+
+```{r}
+n_col_df <- menke_all %>%
+  group_by(family) %>%
+  summarise(n = n())
+n_col_df <- as.data.frame(n_col_df)
+n_col <- length(n_col_df[,1])  
+
+col_vector2 <- distinctColorPalette(k = n_col, altCol = FALSE, runTsne = FALSE)
+n_col_df$color_col <- col_vector2
+
+for(i in 1:length(menke_all[,1])){
+  for(j in 1:n_col){
+    if(menke_all$family[i] == n_col_df$family[j]){
+      menke_all$color_column[i] <- n_col_df$color_col[j]
+    }else{
+    }
+  }
+}
+
+plot_title <- "Bacterial families (16S rRNA) in springbok and giraffe feces through time"
+
+# Family plot:
+family_plot <- ggplot(data = menke_all, aes(x = menke_all$host_day, y = stat(menke_all$percent_within_assigned_family), fill = family)) +
+  geom_bar(stat = 'identity') +
+  geom_col(width = 1) +
+  ggtitle(plot_title) +
+  xlab("Day") +
+  scale_x_discrete(labels=c(1:n_days, 1)) +
+  ylab("Percentage of 16S per bacterial family") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(axis.text.x = element_text(size = 10, angle = 45, hjust = 1)) +
+  facet_grid(~ind, scales = 'free') +
+  scale_fill_manual(values = col_vector2)
+
+# Phylum plot:
+n_col_df <- menke_all %>%
+  group_by(phylum) %>%
+  summarise(n = n())
+n_col_df <- as.data.frame(n_col_df)
+n_col <- length(n_col_df[,1])  
+
+col_vector2 <- distinctColorPalette(k = n_col, altCol = FALSE, runTsne = FALSE)
+n_col_df$color_col <- col_vector2
+
+for(i in 1:length(menke_all[,1])){
+  for(j in 1:n_col){
+    if(menke_all$phylum[i] == n_col_df$phylum[j]){
+      menke_all$phylum_color_column[i] <- n_col_df$color_col[j]
+    }else{
+    }
+  }
+}
+plot_title <- "Bacterial phyla (16S rRNA) in springbok and giraffe feces through time"
+phylum_plot <- ggplot(data = menke_all, aes(x = menke_all$host_day, y = stat(menke_all$percent_within_assigned_family), fill = phylum)) +
+  geom_bar(stat = 'identity') +
+  geom_col(width = 1) +
+  ggtitle(plot_title) +
+  xlab("Day") +
+  scale_x_discrete(labels=c(1:n_days, 1)) +
+  ylab("Percentage of 16S per bacterial phylum") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(axis.text.x = element_text(size = 10, angle = 45, hjust = 1)) +
+  facet_grid(~ind, scales = 'free') +
+  scale_fill_manual(values = col_vector2)
+  
+
+# class plot:
+n_col_df <- menke_all %>%
+  group_by(class) %>%
+  summarise(n = n())
+n_col_df <- as.data.frame(n_col_df)
+n_col <- length(n_col_df[,1])  
+
+col_vector2 <- distinctColorPalette(k = n_col, altCol = FALSE, runTsne = FALSE)
+n_col_df$color_col <- col_vector2
+
+for(i in 1:length(menke_all[,1])){
+  for(j in 1:n_col){
+    if(menke_all$class[i] == n_col_df$class[j]){
+      menke_all$class_color_column[i] <- n_col_df$color_col[j]
+    }else{
+    }
+  }
+}
+plot_title <- "Bacterial classes (16S rRNA) in springbok and giraffe feces through time"
+class_plot <- ggplot(data = menke_all, aes(x = menke_all$host_day, y = stat(menke_all$percent_within_assigned_family), fill = class)) +
+  geom_bar(stat = 'identity') +
+  geom_col(width = 1) +
+  ggtitle(plot_title) +
+  xlab("Day") +
+  scale_x_discrete(labels=c(1:n_days, 1)) +
+  ylab("Percentage of 16S per bacterial class") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(axis.text.x = element_text(size = 10, angle = 45, hjust = 1)) +
+  facet_grid(~ind, scales = 'free') +
+  scale_fill_manual(values = col_vector2)
+
+# Order plot:
+n_col_df <- menke_all %>%
+  group_by(order) %>%
+  summarise(n = n())
+n_col_df <- as.data.frame(n_col_df)
+n_col <- length(n_col_df[,1])  
+
+col_vector2 <- distinctColorPalette(k = n_col, altCol = FALSE, runTsne = FALSE)
+n_col_df$color_col <- col_vector2
+
+for(i in 1:length(menke_all[,1])){
+  for(j in 1:n_col){
+    if(menke_all$order[i] == n_col_df$order[j]){
+      menke_all$order_color_column[i] <- n_col_df$color_col[j]
+    }else{
+    }
+  }
+}
+plot_title <- "Bacterial orders (16S rRNA) in springbok and giraffe feces through time"
+order_plot <- ggplot(data = menke_all, aes(x = menke_all$host_day, y = stat(menke_all$percent_within_assigned_family), fill = order)) +
+  geom_bar(stat = 'identity') +
+  geom_col(width = 1) +
+  ggtitle(plot_title) +
+  xlab("Day") +
+  scale_x_discrete(labels=c(1:n_days, 1)) +
+  ylab("Percentage of 16S per bacterial order") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(axis.text.x = element_text(size = 10, angle = 45, hjust = 1)) +
+  facet_grid(~ind, scales = 'free') +
+  scale_fill_manual(values = col_vector2)
+
+print(plot)  
+print(phylum_plot)
+print(class_plot)
+print(order_plot)
+print(family_plot)
+ggsave(paste0(base_dir,"figures/Menke_et_al_",taxon_level_of_interest,".png"), width = 10, height = 10)
+```
+
+
+Combining the Menke et al (2015) data:
+```{r}
+# Manipulate the Menke et al (2015) df so that it is compatible with the beta diversity df used above:
+menke_all$family <- stri_replace_all_fixed(menke_all$family, pattern = c("-", ".", " "), replacement = c("", "", ""), vectorize_all = FALSE)
+menke_all$order <- stri_replace_all_fixed(menke_all$order, pattern = c("-", ".", " "), replacement = c("", "", ""), vectorize_all = FALSE)
+menke_all$class <- stri_replace_all_fixed(menke_all$class, pattern = c("-", ".", " "), replacement = c("", "", ""), vectorize_all = FALSE)
+menke_all$phylum <- stri_replace_all_fixed(menke_all$phylum, pattern = c("-", ".", " "), replacement = c("", "", ""), vectorize_all = FALSE)
+
+menke_phylum <- aggregate(x = menke_all$percent_within_assigned_family, by = list(menke_all$phylum, menke_all$host_day), FUN = sum)
+menke_phylum$taxon_level <- "phylum"
+##Checking to make sure all the percentages add to 100 (assuming some rounding error)
+#check <- aggregate(x = menke_phylum$x, by = list(menke_phylum$Group.2), FUN = sum)
+menke_class <- aggregate(x = menke_all$percent_within_assigned_family, by = list(menke_all$class, menke_all$host_day), FUN = sum)
+menke_class$taxon_level <- "class"
+##Checking to make sure all the percentages add to 100 (assuming some rounding error)
+#check <- aggregate(x = menke_class$x, by = list(menke_class$Group.2), FUN = sum)
+menke_order <- aggregate(x = menke_all$percent_within_assigned_family, by = list(menke_all$order, menke_all$host_day), FUN = sum)
+menke_order$taxon_level <- "order"
+##Checking to make sure all the percentages add to 100 (assuming some rounding error)
+#check <- aggregate(x = menke_order$x, by = list(menke_order$Group.2), FUN = sum)
+menke_family <- aggregate(x = menke_all$percent_within_assigned_family, by = list(menke_all$family, menke_all$host_day), FUN = sum)
+menke_family$taxon_level <- "family"
+##Checking to make sure all the percentages add to 100 (assuming some rounding error)
+#check <- aggregate(x = menke_order$x, by = list(menke_order$Group.2), FUN = sum)
+
+menke_pcof <- rbind(menke_phylum, menke_class, menke_order, menke_family)
+colnames(menke_pcof) <- c("taxon", "host_day", "percentage", "taxonomic_level")
+
+# Empty beta diversity data frame storing the proportion of each taxon in each host_time  (at the appropriate taxonomic level): 
+beta_div_prop_menke <-  data.frame(matrix(0, nrow = length(unique(menke_all$host_day)), ncol = length(bacterial_taxon_df[,3]), dimnames = list(c(unique(menke_all$host_day)), c(unique(bacterial_taxon_df$childtaxa_name)))))
+
+# Subset the menke_pcof df to only the taxonomic level of interest:
+menke_pcof <- menke_pcof %>%
+  filter(menke_pcof$taxonomic_level == taxon_level_of_interest)
+
+# Counts the number of host_days
+menke_host_time <- unique(menke_all$host_day)
+n_menke_host_time <- length(menke_host_time)
+
+# Iterate thorugh each host_day combination and store the taxon data in the beta_div_prop_menke df created above:
+for(i in 1:n_menke_host_time){
+  #i <- 1
+  ind_host_day <- menke_host_time[i]
+  print(ind_host_day)
+  menke_pcof_subset <- menke_pcof %>%
+    filter(menke_pcof$host_day == ind_host_day)
+  for(j in 1:length(menke_pcof_subset[,1])){
+    #print(paste0(menke_pcof_subset$host_day, " ", menke_pcof_subset$taxon, " ", menke_pcof_subset$percentage))
+    beta_div_prop_menke[menke_pcof_subset$host_day[j], menke_pcof_subset$taxon[j]] <- menke_pcof_subset$percentage[j]
+  }
+}
+
+# Removes all phyla that are not in the bacterial_taxon_df:
+beta_div_prop_menke <- beta_div_prop_menke[, (names(beta_div_prop_menke) %in% c(bacterial_taxon_df$childtaxa_name))]
+
+metadata_menke <- data.frame(matrix(NA, nrow = length(unique(menke_all$host_day)), ncol = 5, dimnames = list(c(unique(menke_all$host_day)), c("host_sp", "age", "pch", "day", "shaded")))) 
+metadata_menke$age <- "present"
+metadata_menke$pch <- 15
+metadata_menke$host_sp <- gsub("_.*", "", rownames(metadata_menke))
+metadata_menke$shaded <- "U"
+metadata_menke$day <- gsub(".*\\_", "", rownames(metadata_menke))
+
+# Adding color column to the metadata; each color signifies a different host species:
+n_col_df <- metadata_menke %>%
+  group_by(host_sp) %>%
+  summarise(n = n())
+n_col_df <- as.data.frame(n_col_df)
+n_col <- length(n_col_df[,1])  
+
+col_vector2 <- distinctColorPalette(k = n_col, altCol = FALSE, runTsne = FALSE)
+n_col_df$color_col <- col_vector2
+
+for(i in 1:length(metadata_menke[,1])){
+  for(j in 1:length(n_col_df[,1])){
+    if(metadata_menke$host_sp[i] == n_col_df$host_sp[j]){
+      metadata_menke$col_host[i] <- n_col_df$color_col[j]
+    }else{
+    }
+  }
+}
+
+# Adding color column to the metadata; each color signifies a different age:
+n_col_df <- metadata_menke %>%
+  group_by(age) %>%
+  summarise(n = n())
+n_col_df <- as.data.frame(n_col_df)
+n_col <- length(n_col_df[,1])  
+
+col_vector2 <- distinctColorPalette(k = n_col, altCol = FALSE, runTsne = FALSE)
+n_col_df$color_col <- col_vector2
+
+for(i in 1:length(metadata_menke[,1])){
+  for(j in 1:length(n_col_df[,1])){
+    if(metadata_menke$age[i] == n_col_df$age[j]){
+      metadata_menke$col_age[i] <- n_col_df$color_col[j]
+    }else{
+    }
+  }
+}
+
+metadata_bison <- metadata_bovid %>%
+  filter(metadata_bovid$host_sp == "Bison \nsp. (paleo)" | metadata_bovid$host_sp == "Bison \nbison (modern)")
+metadata_bison <- metadata_bison[,names(metadata_bison) %in% colnames(metadata_menke)]
+metadata_bison_menke <- rbind(metadata_bison, metadata_menke)
+beta_div_prop_bison <- beta_div_prop[rownames(beta_div_prop) %in% rownames(metadata_bison_menke),]
+beta_div_prop_bison_menke <- rbind(beta_div_prop_bison, beta_div_prop_menke)
+
+menke_braycurtis_prop <- vegdist(beta_div_prop_bison_menke, method = "bray")
+menke_braycurtis_prop_sqrt <- vegdist(beta_div_prop_bison_menke^0.25, method = "bray")
+
+```
+
+Plotting Menke et al (2015):
+```{r}
+NMDS_braycurtis_prop_menke <- metaMDS(menke_braycurtis_prop, k = 2, try = 100, trymax = 100, autotransform = F)$points
+NMDS_braycurtis_prop_menke_sqrt <- metaMDS(menke_braycurtis_prop_sqrt, k = 2, try = 100, trymax = 100, autotransform = F)$points
+
+NMDS_braycurtis_prop_menke <- as.data.frame(NMDS_braycurtis_prop_menke)
+NMDS_braycurtis_prop_menke_sqrt <- as.data.frame(NMDS_braycurtis_prop_menke_sqrt)
+metadata_bison_menke$col_day <- NA
+
+# Color of bison col_age column is black
+#metadata_bison_menke$col_day[metadata_bison_menke$host_sp == "Bison \nsp. (paleo)"] <- "#000000"
+#metadata_bison_menke$col_day[metadata_bison_menke$host_sp == "Bison \nbison (modern)"] <- "#000000"
+metadata_bison_menke$day[metadata_bison_menke$host_sp == "Bison \nsp. (paleo)"] <- "Bison sample (modern: 0 days;\npaleontological: > 15,000 yrs)"
+metadata_bison_menke$day[metadata_bison_menke$host_sp == "Bison \nbison (modern)"] <- "Bison sample (modern: 0 days;\npaleontological: > 15,000 yrs)"
+
+# Colors of Bos Taurus col_age column are variable, depending on the day
+n_col_df <- metadata_bison_menke %>%
+  #filter(metadata_bison_menke$day != "Bison sample (modern: 0 days;\npaleontological: > 15,000 yrs)") %>%
+  group_by(day) %>%
+  summarise(n = n())
+n_col_df <- as.data.frame(n_col_df)
+n_col_df <- n_col_df[order(as.numeric(n_col_df$day)),]
+n_col <- length(n_col_df[,1])  
+
+#col_vector2 <- distinctColorPalette(k = n_col, altCol = FALSE, runTsne = FALSE)
+col_gradient <- fun_color_range <- colorRampPalette(c("royalblue3", "coral3"))
+col_vector2 <- col_gradient(n_col)
+n_col_df$color_col <- col_vector2
+n_col_df$color_col[n_col_df$day == "Bison sample (modern: 0 days;\npaleontological: > 15,000 yrs)"] <- "#000000"
+
+for(i in 1:length(metadata_bison_menke[,1])){
+  for(j in 1:length(n_col_df[,1])){
+    if(metadata_bison_menke$day[i] == n_col_df$day[j]){
+      metadata_bison_menke$col_day[i] <- n_col_df$color_col[j]
+    }else{
+    }
+  }
+}
+
+
+#Add graphing index:
+graph_index <- metadata_bison_menke %>%
+  group_by(host_sp, day) %>%
+  summarise(n = n())
+col_vector2 <- distinctColorPalette(k = nrow(graph_index), altCol = FALSE, runTsne = FALSE)
+graph_index$index_col <- col_vector2
+
+for(i in 1:length(metadata_bison_menke[,1])){
+  for(j in 1:nrow(graph_index[,1])){
+    if(metadata_bison_menke$host_sp[i] == graph_index$host_sp[j] & metadata_bison_menke$day[i] == graph_index$day[j]){
+      metadata_bison_menke$graph_index[i] <- j
+      metadata_bison_menke$index_col[i] <- graph_index$index_col[j]
+    }else{}
+  }
+}
+
+bison_menke_NMDS_metadata <- cbind(NMDS_braycurtis_prop_menke, metadata_bison_menke)
+bison_menke_NMDS_metadata$col_day <- as.character(bison_menke_NMDS_metadata$col_day)
+
+bison_menke_sqrt_NMDS_metadata <- cbind(NMDS_braycurtis_prop_menke_sqrt, metadata_bison_menke)
+bison_menke_sqrt_NMDS_metadata$col_day <- as.character(bison_menke_sqrt_NMDS_metadata$col_day)
+
+# Split the bovid df into one for bison and one for wild species in order to create two separate sets of convex hulls
+bison_menke_NMDS_metadata <- arrange(bison_menke_NMDS_metadata, host_sp, as.numeric(day))
+bison_NMDS_metadata <- bison_menke_NMDS_metadata %>%  filter(bison_menke_NMDS_metadata$host_sp == "Bison \nsp. (paleo)" |
+                                                               bison_menke_NMDS_metadata$host_sp == "Bison \nbison (modern)")
+wild_NMDS_metadata <- bison_menke_NMDS_metadata %>%  filter(bison_menke_NMDS_metadata$host_sp != "Bison \nsp. (paleo)" &
+                                                               bison_menke_NMDS_metadata$host_sp != "Bison \nbison (modern)")
+
+
+#Add graphing index wild species:
+graph_index <- wild_NMDS_metadata %>%
+  group_by(day) %>%
+  summarise(n = n())
+col_vector2 <- distinctColorPalette(k = nrow(graph_index), altCol = FALSE, runTsne = FALSE)
+graph_index$index_col <- col_vector2
+
+for(i in 1:length(wild_NMDS_metadata[,1])){
+  for(j in 1:nrow(graph_index[,1])){
+    if(wild_NMDS_metadata$day[i] == graph_index$day[j]){
+      wild_NMDS_metadata$graph_index[i] <- j
+      wild_NMDS_metadata$index_col[i] <- graph_index$index_col[j]
+    }else{}
+  }
+}
+wild_NMDS_metadata$graph_index <- wild_NMDS_metadata$graph_index + 2
+
+# wild species convex hull
+ch <- wild_NMDS_metadata %>%
+  group_by(graph_index) %>%
+  slice(chull(MDS1, MDS2))
+
+# Bison convex hull
+ch2 <- bison_NMDS_metadata %>%
+  group_by(graph_index) %>%
+  slice(chull(MDS1,MDS2))
+
+# Plotting the bison and wild species NMDS data
+bison_menke_NMDS_plot <- ggplot() +
+  theme_classic() +
+  geom_point(data = wild_NMDS_metadata, aes(x = wild_NMDS_metadata[,1], y = wild_NMDS_metadata[,2], shape = factor(host_sp), col = col_day), size = 5) +
+  geom_polygon(data = ch, aes(x = MDS1, y = MDS2, group = graph_index, col = c(col_day)), size = 2, alpha = 0) +
+  geom_point(data = bison_NMDS_metadata, aes(x = bison_NMDS_metadata[,1], y = bison_NMDS_metadata[,2], shape = factor(host_sp), col = col_day), size = 5) +
+  geom_polygon(data = ch2, aes(x = MDS1, y = MDS2, group = graph_index, col = c(col_day)), size = 2, alpha = 0.4) +
+  xlab("NMDS1") +
+  ylab("NMDS2") +
+  labs(shape = "Host species:",
+       color = "Age of samples (days,\nunless specified):") +
+  scale_color_manual(values = c(unique(bison_menke_NMDS_metadata$col_day)), labels = c(unique(bison_menke_NMDS_metadata$day)), breaks= unique(bison_menke_NMDS_metadata$col_day)) +
+  scale_shape_manual(values=c(16,17,15,18))
+
+leg <- cowplot::get_legend(bison_menke_NMDS_plot)
+leg <- ggplotify::as.ggplot(leg)
+print(leg)
+ggsave(paste0(base_dir,"figures/", taxon_level_of_interest, "_bison_menke_NMDS_legend.png"))
+bison_menke_NMDS_plot <- bison_menke_NMDS_plot + theme(legend.position = "none",
+                                           axis.text=element_text(size=12))
+print(bison_menke_NMDS_plot)
+ggsave(paste0(base_dir,"figures/", taxon_level_of_interest, "_bison_menke_NMDS.png"), width = 8, height = 8, units = 'in')
+
+
+if(taxon_level_of_interest == "phylum"){
+  xx <- -0.7730
+  xxx <- -0.77315
+}else if(taxon_level_of_interest == "class"){
+  xx <- -0.7765
+  xxx <- -0.7775
+}else{
+  xx <- -0.7730
+  xxx <- -0.77315
+}
+
+bison_menke_NMDSzoom2_plot <- ggplot() +
+  theme_classic() +
+  geom_point(data = wild_NMDS_metadata, aes(x = wild_NMDS_metadata[,1], y = wild_NMDS_metadata[,2], shape = factor(host_sp), col = col_day), size = 4) +
+  geom_polygon(data = ch, aes(x = MDS1, y = MDS2, group = graph_index, col = c(col_day)), size = 1, alpha = 0) +
+  geom_point(data = bison_NMDS_metadata, aes(x = bison_NMDS_metadata[,1], y = bison_NMDS_metadata[,2], shape = factor(host_sp), col = col_day), size = 4) +
+  geom_polygon(data = ch2, aes(x = MDS1, y = MDS2, group = graph_index, col = c(col_day)), size = 1, alpha = 0.4) +
+  xlab("NMDS1") +
+  ylab("NMDS2") +
+  labs(shape = "Host species:",
+       color = "Age of samples (days,\nunless specified):") +
+  scale_color_manual(values = c(unique(bison_menke_NMDS_metadata$col_day)), labels = c(unique(bison_menke_NMDS_metadata$day)), breaks= unique(bison_menke_NMDS_metadata$col_day)) +
+  theme(legend.position = "none", axis.text=element_text(size=12)) +
+  scale_shape_manual(values=c(16,17,15,18)) +
+  xlim(xx, xxx) 
+print(bison_menke_NMDSzoom2_plot)
+#ggsave(paste0(base_dir,"figures/", taxon_level_of_interest, "_bison_menke_NMDS_zoom2.png"), width = 8, height = 8, units = 'in')
+
+
+if(taxon_level_of_interest == "phylum"){
+  xx <- 0.2208
+  xxx <- 0.22095
+}else if(taxon_level_of_interest == "class"){
+  xx <- 0.2218
+  xxx <- 0.2222
+}else{
+  xx <- 0.2208
+  xxx <- 0.22095
+}
+
+
+bison_menke_NMDSzoom1_plot <- ggplot() +
+  theme_classic() +
+  geom_point(data = wild_NMDS_metadata, aes(x = wild_NMDS_metadata[,1], y = wild_NMDS_metadata[,2], shape = factor(host_sp), col = col_day), size = 4) +
+  geom_polygon(data = ch, aes(x = MDS1, y = MDS2, group = graph_index, col = c(col_day)), size = 1, alpha = 0) +
+  geom_point(data = bison_NMDS_metadata, aes(x = bison_NMDS_metadata[,1], y = bison_NMDS_metadata[,2], shape = factor(host_sp), col = col_day), size = 4) +
+  geom_polygon(data = ch2, aes(x = MDS1, y = MDS2, group = graph_index, col = c(col_day)), size = 1, alpha = 0.4) +
+  xlab("NMDS1") +
+  ylab("NMDS2") +
+  labs(shape = "Host species:",
+       color = "Age of samples (days,\nunless specified):") +
+  scale_color_manual(values = c(unique(bison_menke_NMDS_metadata$col_day)), labels = c(unique(bison_menke_NMDS_metadata$day)), breaks= unique(bison_menke_NMDS_metadata$col_day)) +
+  theme(legend.position = "none", axis.text=element_text(size=12)) +
+  scale_shape_manual(values=c(16,17,15,18)) +
+  xlim(xx, xxx)
+print(bison_menke_NMDSzoom1_plot)
+#ggsave(paste0(base_dir,"figures/", taxon_level_of_interest, "_bison_menke_NMDS_zoom1.png"), width = 8, height = 8, units = 'in')
+
+```
+
+```{r}
+metadata_bison_menke$host_sp <- as.factor(metadata_bison_menke$host_sp)
+metadata_bison_menke$order[metadata_bison_menke$host_sp == "Bison \nsp. (paleo)" |
+                             metadata_bison_menke$host_sp == "Bison \nbison (modern)" |
+                             metadata_bison_menke$host_sp == "Springbok"] <- "Bovidae"
+metadata_bison_menke$order[metadata_bison_menke$host_sp == "Giraffe"] <- "Giraffidae"
+metadata_bison_menke$day <-  str_replace(metadata_bison_menke$day, "Day ", "")
+metadata_bison_menke$day[metadata_bison_menke$host_sp == "Bison \nbison (modern)"] <- 1
+metadata_bison_menke$day[metadata_bison_menke$host_sp == "Bison \nsp. (paleo)"] <- 10000*365
+pmv <- adonis(formula = menke_braycurtis_prop ~ metadata_bison_menke$day + metadata_bison_menke$order / metadata_bison_menke$host_sp, strata = metadata_bison_menke$order, data = metadata_bison_menke, permutations = 9999, method = 'bray')
+pmv
+```
+
+
+```{r}
+
+#metadata_menke
+#beta_div_prop_menke
+
+menke_braycurtis_prop <- vegdist(beta_div_prop_menke, method = "bray")
+NMDS_braycurtis_prop_menke <- metaMDS(menke_braycurtis_prop, k = 2, try = 100, trymax = 100, autotransform = F)$points
+NMDS_braycurtis_prop_menke <- as.data.frame(NMDS_braycurtis_prop_menke)
+
+
+n_col_df <- metadata_menke %>%
+  #filter(metadata_bison_menke$day != "Bison sample (modern: 0 days;\npaleontological: > 15,000 yrs)") %>%
+  group_by(day) %>%
+  summarise(n = n())
+n_col_df <- as.data.frame(n_col_df)
+n_col_df <- n_col_df[order(as.numeric(n_col_df$day)),]
+n_col <- length(n_col_df[,1])  
+
+#col_vector2 <- distinctColorPalette(k = n_col, altCol = FALSE, runTsne = FALSE)
+col_gradient <- fun_color_range <- colorRampPalette(c("royalblue3", "coral3"))
+col_vector2 <- col_gradient(n_col)
+n_col_df$color_col <- col_vector2
+
+for(i in 1:length(metadata_menke[,1])){
+  for(j in 1:length(n_col_df[,1])){
+    if(metadata_menke$day[i] == n_col_df$day[j]){
+      metadata_menke$col_day[i] <- n_col_df$color_col[j]
+    }else{
+    }
+  }
+}
+
+#Add graphing index:
+graph_index <- metadata_menke %>%
+  group_by(host_sp, day) %>%
+  summarise(n = n())
+col_vector2 <- distinctColorPalette(k = nrow(graph_index), altCol = FALSE, runTsne = FALSE)
+graph_index$index_col <- col_vector2
+
+for(i in 1:length(metadata_menke[,1])){
+  for(j in 1:nrow(graph_index[,1])){
+    if(metadata_menke$host_sp[i] == graph_index$host_sp[j] & metadata_menke$day[i] == graph_index$day[j]){
+      metadata_menke$graph_index[i] <- j
+      metadata_menke$index_col[i] <- graph_index$index_col[j]
+    }else{}
+  }
+}
+
+menke_NMDS_metadata <- cbind(NMDS_braycurtis_prop_menke, metadata_menke)
+menke_NMDS_metadata$col_day <- as.character(menke_NMDS_metadata$col_day)
+
+springbok_NMDS_metadata <- menke_NMDS_metadata %>%
+  filter(menke_NMDS_metadata$host_sp == "Springbok")
+
+giraffe_NMDS_metadata <- menke_NMDS_metadata %>%
+  filter(menke_NMDS_metadata$host_sp == "Giraffe")
+  
+ch <- menke_NMDS_metadata %>%
+  group_by(graph_index) %>%
+  slice(chull(MDS1, MDS2))
+
+ch1 <- springbok_NMDS_metadata %>%
+  group_by(col_host) %>%
+  slice(chull(MDS1, MDS2))
+
+ch2 <- giraffe_NMDS_metadata %>%
+  group_by(col_host) %>%
+  slice(chull(MDS1, MDS2))
+
+# Plotting the bison and wild species NMDS data
+menke_NMDS_plot <- ggplot() +
+  theme_classic() +
+  geom_point(data = menke_NMDS_metadata, aes(x = menke_NMDS_metadata[,1], y = menke_NMDS_metadata[,2], shape = factor(host_sp), col = col_day), size = 5) +
+  geom_polygon(data = ch, aes(x = MDS1, y = MDS2, group = graph_index, col = c(col_day)), size = 1, alpha = 0) +
+  geom_polygon(data = ch1, aes(x = MDS1, y = MDS2, group = col_host), fill = "skyblue", size = 0, alpha = 0.2) +
+  geom_polygon(data = ch2, aes(x = MDS1, y = MDS2, group = col_host), fill = "red", size = 0, alpha = 0.2) +
+  xlab("NMDS1") +
+  ylab("NMDS2") +
+  labs(shape = "Host species (points):",
+       color = "Age of samples (days,\nunless specified):") +
+  scale_color_manual(values = c(unique(menke_NMDS_metadata$col_day)), labels = c(unique(menke_NMDS_metadata$day)), breaks= c(unique(menke_NMDS_metadata$col_day))) +
+  scale_shape_manual(values=c(15,18))
+
+leg <- cowplot::get_legend(menke_NMDS_plot)
+leg <- ggplotify::as.ggplot(leg)
+print(leg)
+ggsave(paste0(base_dir,"figures/", taxon_level_of_interest, "_menke2_NMDS_legend.png"))
+menke_NMDS_plot <- menke_NMDS_plot + theme(legend.position = "none",
+                                           axis.text=element_text(size=12))
+print(menke_NMDS_plot)
+ggsave(paste0(base_dir,"figures/", taxon_level_of_interest, "_menke2_NMDS.png"), width = 8, height = 8, units = 'in')
+
+
+```
+

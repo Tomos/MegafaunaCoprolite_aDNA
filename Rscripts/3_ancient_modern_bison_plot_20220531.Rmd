@@ -1,0 +1,174 @@
+---
+title: "3_ancient_modern_bison_plot_20220531"
+author: "Tomos Prys-Jones"
+date: "31/05/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(cluster)    
+library(dplyr)
+library(tidyverse) 
+library(stats)
+library(rlang)
+library(reshape)
+library(ggplot2)
+library(plotly)
+library(plot3D)
+library(randomcoloR)
+library(scales)
+library("gridExtra") 
+```
+
+```{r}
+rm(list = ls())
+if(!is.null(dev.list())) dev.off()
+
+base_dir <- "../data/coverage_stats/"
+### DAMAGE PER TAXON SCALED BY THE NUMBER OF READS:
+abison_5p <- readRDS(paste0(base_dir, "a_bison/damage_5p_CT_2.rds"))
+abison_3p <- readRDS(paste0(base_dir, "a_bison/damage_3p_AG_2.rds"))
+mbison_5p <- readRDS(paste0(base_dir, "m_bison/damage_5p_CT_2.rds"))
+mbison_3p <- readRDS(paste0(base_dir, "m_bison/damage_3p_AG_2.rds"))
+
+abison_5p <- cbind(abison_5p, rep("Paleontological", length(abison_5p$pos)), rep("5p", length(abison_5p$pos)))
+abison_3p <- cbind(abison_3p, rep("Paleontological", length(abison_3p$pos)), rep("3p", length(abison_3p$pos)))
+mbison_5p <- cbind(mbison_5p, rep("Modern", length(mbison_5p$pos)), rep("5p", length(mbison_5p$pos)))
+mbison_3p <-  cbind(mbison_3p, rep("Modern", length(mbison_3p$pos)), rep("3p", length(mbison_3p$pos)))
+
+names(abison_5p) <- c("pos", "transition_rate", "host", "terminus")
+names(abison_3p) <- c("pos", "transition_rate", "host", "terminus")
+names(mbison_5p) <- c("pos", "transition_rate", "host", "terminus")
+names(mbison_3p) <- c("pos", "transition_rate", "host", "terminus")
+
+damage5p_df <- rbind(abison_5p, mbison_5p)
+damage3p_df <- rbind(abison_3p, mbison_3p)
+
+max_rate <- max(max(damage5p_df$transition_rate),
+                max(damage3p_df$transition_rate))
+
+{
+CT_plot_scaled_read_no <- ggplot(damage5p_df,  aes(x = pos, y = transition_rate, color = host)) +
+  theme_classic() +
+  geom_smooth(size = 2, se = F) + 
+  #geom_line(size = 1) + 
+  xlab("Distance from 5' end of read (bases)") +
+  ylab("Mean C -> T transition rate per base pair") +
+  ylim(c(0, max_rate)) +
+  scale_color_manual(name = "Bison sample age:",
+                     values = c("skyblue", "orangered3")
+                     ) +
+  theme(axis.text=element_text(size=12),
+          legend.text = element_text(size = 12),
+          legend.title = element_text(size = 14),
+        axis.title = element_text(size = 12))
+    
+leg <- cowplot::get_legend(CT_plot_scaled_read_no)
+leg <- ggplotify::as.ggplot(leg)
+print(leg)
+ggsave(file=paste0(base_dir, "paleo_modern_bison_perRead_legend.png"), leg, width = 14, height = 7)
+CT_plot_scaled_read_no <- CT_plot_scaled_read_no + theme(legend.position = "none")
+
+
+AG_plot_scaled_read_no <- ggplot(damage3p_df,  aes(x = pos, y = transition_rate, color = host)) +
+  theme_classic() +
+  geom_smooth(size = 2, se = F) + 
+  #geom_line(size = 1) + 
+  xlab("Distance from 3' end of read (bases)") +
+  ylab("Mean A -> G transition rate per base pair") +
+  ylim(c(0, max_rate)) +
+  scale_color_manual(name = "Bison sample age:",
+                     values = c("skyblue", "orangered3")
+                     ) +  
+  scale_x_reverse() +
+  scale_y_continuous(position = "right", limits = c(0, max_rate)) +
+  theme(axis.text=element_text(size=12),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 14),
+        axis.title = element_text(size = 12))
+
+AG_plot_scaled_read_no <- AG_plot_scaled_read_no + 
+  theme(legend.position = "none") 
+
+g <- arrangeGrob(CT_plot_scaled_read_no, AG_plot_scaled_read_no, nrow=1) 
+plot(g)
+ggsave(file=paste0("../figures/paleo_modern_bison_perRead.png"), g, width = 14, height = 7)
+
+}
+
+
+
+### DAMAGE PER TAXON CUMULATIVE:
+abison_5p <- readRDS(paste0(base_dir, "a_bison/damage_5p_CT.rds"))
+abison_3p <- readRDS(paste0(base_dir, "a_bison/damage_3p_AG.rds"))
+mbison_5p <- readRDS(paste0(base_dir, "m_bison/damage_5p_CT.rds"))
+mbison_3p <- readRDS(paste0(base_dir, "m_bison/damage_3p_AG.rds"))
+
+abison_5p <- cbind(abison_5p, rep("Paleontological", length(abison_5p$pos)), rep("5p", length(abison_5p$pos)))
+abison_3p <- cbind(abison_3p, rep("Paleontological", length(abison_3p$pos)), rep("3p", length(abison_3p$pos)))
+mbison_5p <- cbind(mbison_5p, rep("Modern", length(mbison_5p$pos)), rep("5p", length(mbison_5p$pos)))
+mbison_3p <-  cbind(mbison_3p, rep("Modern", length(mbison_3p$pos)), rep("3p", length(mbison_3p$pos)))
+
+names(abison_5p) <- c("pos", "transition_rate", "host", "terminus")
+names(abison_3p) <- c("pos", "transition_rate", "host", "terminus")
+names(mbison_5p) <- c("pos", "transition_rate", "host", "terminus")
+names(mbison_3p) <- c("pos", "transition_rate", "host", "terminus")
+
+damage5p_df <- rbind(abison_5p, mbison_5p)
+damage3p_df <- rbind(abison_3p, mbison_3p)
+
+max_rate <- max(max(damage5p_df$transition_rate),
+                max(damage3p_df$transition_rate))
+
+{
+  CT_plot_scaled_read_no <- ggplot(damage5p_df,  aes(x = pos, y = transition_rate, color = host)) +
+    theme_classic() +
+    geom_smooth(size = 2, se = F) + 
+    #geom_line(size = 1) + 
+    xlab("Distance from 5' end of read (bases)") +
+    ylab("Mean C -> T transition rate per base pair") +
+    ylim(c(0, max_rate)) +
+    scale_color_manual(name = "Bison samples age:",
+                       values = c("skyblue", "orangered3")
+    ) +
+    theme(axis.text=element_text(size=12),
+          legend.text = element_text(size = 12),
+          legend.title = element_text(size = 14),
+          axis.title = element_text(size = 12))
+  
+  leg <- cowplot::get_legend(CT_plot_scaled_read_no)
+  leg <- ggplotify::as.ggplot(leg)
+  print(leg)
+  ggsave(file=paste0("../figures/paleo_modern_bison_perTaxon_legend.png"), leg, width = 14, height = 7)
+  CT_plot_scaled_read_no <- CT_plot_scaled_read_no + theme(legend.position = "none")
+  
+  
+  AG_plot_scaled_read_no <- ggplot(damage3p_df,  aes(x = pos, y = transition_rate, color = host)) +
+    theme_classic() +
+    geom_smooth(size = 2, se = F) + 
+    #geom_line(size = 1) + 
+    xlab("Distance from 3' end of read (bases)") +
+    ylab("Mean A -> G transition rate per base pair") +
+    ylim(c(0, max_rate)) +
+    scale_color_manual(name = "Bison sample age:",
+                       values = c("skyblue", "orangered3")
+    ) +  
+    scale_x_reverse() +
+    scale_y_continuous(position = "right", limits = c(0, max_rate)) +
+    theme(axis.text=element_text(size=12),
+          legend.text = element_text(size = 12),
+          legend.title = element_text(size = 14),
+          axis.title = element_text(size = 12))
+  
+  AG_plot_scaled_read_no <- AG_plot_scaled_read_no + 
+    theme(legend.position = "none") 
+  
+  g <- arrangeGrob(CT_plot_scaled_read_no, AG_plot_scaled_read_no, nrow=1) 
+  plot(g)
+  ggsave(file=paste0("../figures/paleo_modern_bison_perTaxon.png"), g, width = 14, height = 7)
+  
+}
+
+```
+
