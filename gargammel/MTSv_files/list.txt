@@ -1,0 +1,12 @@
+./gargammel_36bp_3e_efficient/
+./gargammel_36bp_3e_fast/
+./gargammel_36bp_3e_sensitive/
+./gargammel_36bp_5e_efficient/
+./gargammel_36bp_5e_fast/
+./gargammel_36bp_5e_sensitive/
+./gargammel_50bp_3e_efficient/
+./gargammel_50bp_3e_fast/
+./gargammel_50bp_3e_sensitive/
+./gargammel_50bp_5e_efficient/
+./gargammel_50bp_5e_fast/
+./gargammel_50bp_5e_sensitive/

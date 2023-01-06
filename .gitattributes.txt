@@ -4,3 +4,4 @@
 *.R -crlf
 *.csv -crlf
 *.html -crlf
+*.sh -crlf
